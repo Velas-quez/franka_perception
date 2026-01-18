@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 import numpy as np
 
-def filter_point_cloud(point_cloud, voxel_size=0.005, nb_neighbors=20, std_ratio=2.0, max_dist=1.2):
+def filter_point_cloud(point_cloud, voxel_size=0.003, nb_neighbors=20, std_ratio=2.0, max_dist=1.2):
     """
     Filters the input point cloud using voxel downsampling and statistical outlier removal.
 

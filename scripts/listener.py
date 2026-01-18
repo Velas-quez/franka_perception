@@ -11,8 +11,8 @@ import rospy
 from sensor_msgs import point_cloud2 as pc2
 from sensor_msgs.msg import PointCloud2
 
-from filter import filter_point_cloud
-from identify_cubes import identify_cubes
+from utils.filter import filter_point_cloud
+from utils.cluster import cluster_point_cloud
 
 
 class SingleCloudViewer:
@@ -24,6 +24,8 @@ class SingleCloudViewer:
 
         self._cloud_sub = rospy.Subscriber(self._cloud_topic, PointCloud2,
                                            self._cloud_cb, queue_size=1)
+
+        self._cube_side_length = rospy.get_param("~cube_side_length", 0.045)
 
         self._points: Optional[np.ndarray] = None
         self._cloud_ready = threading.Event()
@@ -83,49 +85,55 @@ class SingleCloudViewer:
 
         pcd = o3d.geometry.PointCloud()
         pcd.points = o3d.utility.Vector3dVector(points)
-        pcd = filter_point_cloud(pcd)
+        geometries = []
+
+        # Filtering
+        pcd = filter_point_cloud(pcd, voxel_size=0.002)
         
         # Plane removal
         plane_model, inliers = pcd.segment_plane(distance_threshold=0.01,
                                         ransac_n=3,
                                         num_iterations=1000)
-
         pcd = pcd.select_by_index(inliers, invert=True)
           
         # Clustering the point cloud
-        labels = np.array(pcd.cluster_dbscan(eps=0.02, min_points=10, print_progress=True))
-        max_label = labels.max()
-        print(f"point cloud has {max_label + 1} clusters")
-        colors = plt.get_cmap("tab20")(labels / (max_label if max_label > 0 else 1))
-        colors[labels < 0] = 0
-        pcd.colors = o3d.utility.Vector3dVector(colors[:, :3])
-            
-        if True:
-            # Estimating normals
-            pcd.estimate_normals(search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=0.1, max_nn=30))
+        cluster_boxes, clusters = cluster_point_cloud(pcd, eps=0.005, min_points=10, render_boxes=False)
+        cluster_count = len(clusters)
+        
+        
+        ### Cubes identification
+        # selected_clusters = [clusters[5], clusters[7], clusters[8]]  # Manually select clusters corresponding to cubes
+        selected_clusters = clusters
+        
+        # Plane clustering - Detect planes in each cluster
+        obbs = []
+        for cluster_idx, selected_cluster in enumerate(selected_clusters):
+            remaining_pcd = selected_cluster
+            while len(remaining_pcd.points) > 20:
+                print("Cluster", cluster_idx, "remaining points:", len(remaining_pcd.points))
+                plane_model, inliers = remaining_pcd.segment_plane(distance_threshold=0.0005,
+                                                        ransac_n=3,
+                                                        num_iterations=1000)
+                inlier_cloud = remaining_pcd.select_by_index(inliers)
+                outlier_cloud = remaining_pcd.select_by_index(inliers, invert=True)
+                remaining_pcd = outlier_cloud
+                
+                if len(inlier_cloud.points) < 20:
+                    continue
+                
+                # Compute oriented bounding box
+                obb = inlier_cloud.get_oriented_bounding_box()
+                obb.color = (1, 0, 0)
+                obbs.append(obb)
 
-        if True:
-            # Identificar cubos a partir dos clusters e das normais
-            try:
-                cubes = identify_cubes(pcd, labels)
-            except Exception as exc:
-                rospy.logerr("Erro ao identificar cubos: %s", exc)
-                cubes = []
+        # 
 
-            geometries = [pcd]
 
-            # Renderizar cubos estimados como OrientedBoundingBox
-            for cube in cubes:
-                center = cube["center"]
-                R = cube["orientation"]
-                size = cube["size"]
-
-                obb = o3d.geometry.OrientedBoundingBox()
-                obb.center = center
-                obb.R = R
-                obb.extent = np.array([size, size, size], dtype=float)
-                obb.color = (1.0, 0.0, 0.0)
-                geometries.append(obb)
+        # Rendering
+        pcd.paint_uniform_color([0.6, 0.6, 0.6])
+        geometries = [pcd]
+        geometries.extend(cluster_boxes)
+        geometries.extend(obbs)
 
         try:
             o3d.visualization.draw_geometries(
