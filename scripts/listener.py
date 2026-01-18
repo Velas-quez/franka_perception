@@ -206,8 +206,8 @@ class SingleCloudViewer:
                 centroid = np.asarray(inlier_cloud.points).mean(axis=0)
                 plane_infos.append({"normal": normal, "centroid": centroid})
 
-            # Estimate cube pose from planes
-            if len(plane_infos) >= 3:
+            # Estimate cube pose from planes (works with 1–3 faces)
+            if len(plane_infos) >= 1:
                 cube_pose = self._estimate_cube_pose(plane_infos)
             else:
                 cube_pose = None
