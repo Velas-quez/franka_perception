@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Render the first received ZED2 point cloud with Open3D."""
 
+from itertools import combinations, product
 import threading
 from typing import Optional
 
@@ -67,6 +68,76 @@ class SingleCloudViewer:
             arr = arr[np.all(np.isfinite(arr), axis=1)]
         return arr
 
+    def _estimate_cube_pose(self, planes):
+        """Estimate cube pose from up to 3 visible faces (no parallel requirement)."""
+        if not planes:
+            return None
+
+        # Pick the best subset of up to 3 planes with near-orthogonal normals.
+        if len(planes) <= 3:
+            chosen_planes = planes
+        else:
+            best = None
+            for triplet in combinations(planes, 3):
+                normals = [p["normal"] / np.linalg.norm(p["normal"]) for p in triplet]
+                dots = [
+                    abs(float(np.dot(normals[0], normals[1]))),
+                    abs(float(np.dot(normals[0], normals[2]))),
+                    abs(float(np.dot(normals[1], normals[2])))
+                ]
+                score = max(dots)
+                if best is None or score < best[0]:
+                    best = (score, triplet)
+            chosen_planes = list(best[1]) if best else planes[:3]
+
+        normals = [p["normal"] / (np.linalg.norm(p["normal"]) + 1e-12) for p in chosen_planes]
+        centroids = [p["centroid"] for p in chosen_planes]
+        half_side = 0.5 * self._cube_side_length
+
+        # Try all sign combinations to find the most consistent center estimate.
+        best_center = None
+        best_normals = None
+        best_spread = np.inf
+        for signs in product([-1.0, 1.0], repeat=len(normals)):
+            candidate_normals = []
+            candidate_centers = []
+            for n, c, s in zip(normals, centroids, signs):
+                oriented_n = s * n
+                candidate_normals.append(oriented_n)
+                candidate_centers.append(c - oriented_n * half_side)
+            centers_arr = np.stack(candidate_centers)
+            center_mean = centers_arr.mean(axis=0)
+            spread = np.linalg.norm(centers_arr - center_mean, axis=1).mean()
+            if spread < best_spread:
+                best_spread = spread
+                best_center = center_mean
+                best_normals = candidate_normals
+
+        if best_center is None or best_normals is None:
+            return None
+
+        axes = list(best_normals)
+        # Complete an orthonormal basis if fewer than 3 planes were seen.
+        if len(axes) == 1:
+            aux = np.array([1.0, 0.0, 0.0])
+            if abs(float(np.dot(aux, axes[0]))) > 0.9:
+                aux = np.array([0.0, 1.0, 0.0])
+            axes.append(np.cross(axes[0], aux))
+        if len(axes) == 2:
+            cross_axis = np.cross(axes[0], axes[1])
+            if np.linalg.norm(cross_axis) < 1e-6:
+                cross_axis = np.array([0.0, 0.0, 1.0])
+            axes.append(cross_axis)
+
+        axis_matrix = np.stack([a / (np.linalg.norm(a) + 1e-12) for a in axes], axis=1)
+        U, _, Vt = np.linalg.svd(axis_matrix)
+        R = U @ Vt
+        if np.linalg.det(R) < 0:
+            U[:, -1] *= -1
+            R = U @ Vt
+
+        return R, best_center
+
     def run(self) -> None:
         rospy.loginfo("Waiting for the first valid cloud...")
         while not rospy.is_shutdown():
@@ -107,7 +178,9 @@ class SingleCloudViewer:
         
         # Plane clustering - Detect planes in each cluster
         obbs = []
+        estimated_cubes = []
         for cluster_idx, selected_cluster in enumerate(selected_clusters):
+            plane_infos = []
             remaining_pcd = selected_cluster
             while len(remaining_pcd.points) > 20:
                 print("Cluster", cluster_idx, "remaining points:", len(remaining_pcd.points))
@@ -125,15 +198,63 @@ class SingleCloudViewer:
                 obb = inlier_cloud.get_oriented_bounding_box()
                 obb.color = (1, 0, 0)
                 obbs.append(obb)
+                normal = np.asarray(plane_model[:3], dtype=np.float64)
+                normal_norm = np.linalg.norm(normal)
+                if normal_norm < 1e-9:
+                    continue
+                normal /= normal_norm
+                centroid = np.asarray(inlier_cloud.points).mean(axis=0)
+                plane_infos.append({"normal": normal, "centroid": centroid})
 
-        # 
+            # Estimate cube pose from planes
+            if len(plane_infos) >= 3:
+                cube_pose = self._estimate_cube_pose(plane_infos)
+            else:
+                cube_pose = None
 
+            # Fit cube with ICP when pose exists
+            if cube_pose is not None:
+                R_init, t_init = cube_pose
+                cube_mesh = o3d.geometry.TriangleMesh.create_box(
+                    self._cube_side_length,
+                    self._cube_side_length,
+                    self._cube_side_length
+                )
+                cube_mesh.translate(-cube_mesh.get_center())
+                source_pcd = cube_mesh.sample_points_poisson_disk(800)
+                target_pcd = selected_cluster.voxel_down_sample(voxel_size=0.0025)
+                if len(target_pcd.points) == 0:
+                    continue
+                target_pcd.estimate_normals(
+                    o3d.geometry.KDTreeSearchParamHybrid(radius=0.01, max_nn=30)
+                )
+                init_T = np.eye(4)
+                init_T[:3, :3] = R_init
+                init_T[:3, 3] = t_init
+                icp_result = o3d.pipelines.registration.registration_icp(
+                    source_pcd,
+                    target_pcd,
+                    0.005,
+                    init_T,
+                    o3d.pipelines.registration.TransformationEstimationPointToPlane()
+                )
+                if icp_result.fitness > 0.2:
+                    cube_mesh_est = o3d.geometry.TriangleMesh.create_box(
+                        self._cube_side_length,
+                        self._cube_side_length,
+                        self._cube_side_length
+                    )
+                    cube_mesh_est.translate(-cube_mesh_est.get_center())
+                    cube_mesh_est.transform(icp_result.transformation)
+                    cube_mesh_est.paint_uniform_color([0.1, 0.4, 0.9])
+                    estimated_cubes.append(cube_mesh_est)
 
         # Rendering
         pcd.paint_uniform_color([0.6, 0.6, 0.6])
         geometries = [pcd]
         geometries.extend(cluster_boxes)
         geometries.extend(obbs)
+        geometries.extend(estimated_cubes)
 
         try:
             o3d.visualization.draw_geometries(
