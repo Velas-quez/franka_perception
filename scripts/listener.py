@@ -180,40 +180,47 @@ class SingleCloudViewer:
         obbs = []
         estimated_cubes = []
         for cluster_idx, selected_cluster in enumerate(selected_clusters):
-            plane_infos = []
             remaining_pcd = selected_cluster
-            while len(remaining_pcd.points) > 20:
-                print("Cluster", cluster_idx, "remaining points:", len(remaining_pcd.points))
-                plane_model, inliers = remaining_pcd.segment_plane(distance_threshold=0.0005,
+            max_cubes = 2
+            clearance = 0.015  # meters to carve out points after a cube is fitted
+            for cube_idx in range(max_cubes):
+                if len(remaining_pcd.points) < 30:
+                    break
+
+                plane_infos = []
+                temp_pcd = remaining_pcd
+                while len(temp_pcd.points) > 20:
+                    plane_model, inliers = temp_pcd.segment_plane(distance_threshold=0.0005,
                                                         ransac_n=3,
                                                         num_iterations=1000)
-                inlier_cloud = remaining_pcd.select_by_index(inliers)
-                outlier_cloud = remaining_pcd.select_by_index(inliers, invert=True)
-                remaining_pcd = outlier_cloud
-                
-                if len(inlier_cloud.points) < 20:
-                    continue
-                
-                # Compute oriented bounding box
-                obb = inlier_cloud.get_oriented_bounding_box()
-                obb.color = (1, 0, 0)
-                obbs.append(obb)
-                normal = np.asarray(plane_model[:3], dtype=np.float64)
-                normal_norm = np.linalg.norm(normal)
-                if normal_norm < 1e-9:
-                    continue
-                normal /= normal_norm
-                centroid = np.asarray(inlier_cloud.points).mean(axis=0)
-                plane_infos.append({"normal": normal, "centroid": centroid})
+                    inlier_cloud = temp_pcd.select_by_index(inliers)
+                    outlier_cloud = temp_pcd.select_by_index(inliers, invert=True)
+                    temp_pcd = outlier_cloud
+                    
+                    if len(inlier_cloud.points) < 20:
+                        continue
+                    
+                    # Compute oriented bounding box
+                    obb = inlier_cloud.get_oriented_bounding_box()
+                    obb.color = (1, 0, 0)
+                    obbs.append(obb)
+                    normal = np.asarray(plane_model[:3], dtype=np.float64)
+                    normal_norm = np.linalg.norm(normal)
+                    if normal_norm < 1e-9:
+                        continue
+                    normal /= normal_norm
+                    centroid = np.asarray(inlier_cloud.points).mean(axis=0)
+                    plane_infos.append({"normal": normal, "centroid": centroid})
 
-            # Estimate cube pose from planes (works with 1–3 faces)
-            if len(plane_infos) >= 1:
+                if len(plane_infos) < 1:
+                    break
+
+                # Estimate cube pose from planes (works with 1–3 faces)
                 cube_pose = self._estimate_cube_pose(plane_infos)
-            else:
-                cube_pose = None
+                if cube_pose is None:
+                    break
 
-            # Fit cube with ICP when pose exists
-            if cube_pose is not None:
+                # Fit cube with ICP when pose exists
                 R_init, t_init = cube_pose
                 cube_mesh = o3d.geometry.TriangleMesh.create_box(
                     self._cube_side_length,
@@ -221,33 +228,59 @@ class SingleCloudViewer:
                     self._cube_side_length
                 )
                 cube_mesh.translate(-cube_mesh.get_center())
-                source_pcd = cube_mesh.sample_points_poisson_disk(800)
-                target_pcd = selected_cluster.voxel_down_sample(voxel_size=0.0025)
+                source_pcd = cube_mesh.sample_points_poisson_disk(1500)
+                target_pcd = remaining_pcd.voxel_down_sample(voxel_size=0.002)
                 if len(target_pcd.points) == 0:
-                    continue
+                    break
                 target_pcd.estimate_normals(
-                    o3d.geometry.KDTreeSearchParamHybrid(radius=0.01, max_nn=30)
+                    o3d.geometry.KDTreeSearchParamHybrid(radius=0.015, max_nn=50)
                 )
                 init_T = np.eye(4)
                 init_T[:3, :3] = R_init
                 init_T[:3, 3] = t_init
-                icp_result = o3d.pipelines.registration.registration_icp(
+                icp_coarse = o3d.pipelines.registration.registration_icp(
                     source_pcd,
                     target_pcd,
-                    0.005,
+                    0.008,
                     init_T,
                     o3d.pipelines.registration.TransformationEstimationPointToPlane()
                 )
-                if icp_result.fitness > 0.2:
-                    cube_mesh_est = o3d.geometry.TriangleMesh.create_box(
-                        self._cube_side_length,
-                        self._cube_side_length,
-                        self._cube_side_length
-                    )
-                    cube_mesh_est.translate(-cube_mesh_est.get_center())
-                    cube_mesh_est.transform(icp_result.transformation)
-                    cube_mesh_est.paint_uniform_color([0.1, 0.4, 0.9])
-                    estimated_cubes.append(cube_mesh_est)
+                icp_result = o3d.pipelines.registration.registration_icp(
+                    source_pcd,
+                    target_pcd,
+                    0.003,
+                    icp_coarse.transformation,
+                    o3d.pipelines.registration.TransformationEstimationPointToPlane()
+                )
+                if icp_result.fitness <= 0.2 or icp_result.inlier_rmse > 0.004:
+                    break
+
+                T_final = icp_result.transformation.copy()
+                R_fit = T_final[:3, :3]
+                U, _, Vt = np.linalg.svd(R_fit)
+                R_ortho = U @ Vt
+                if np.linalg.det(R_ortho) < 0:
+                    U[:, -1] *= -1
+                    R_ortho = U @ Vt
+                T_final[:3, :3] = R_ortho
+
+                cube_mesh_est = o3d.geometry.TriangleMesh.create_box(
+                    self._cube_side_length,
+                    self._cube_side_length,
+                    self._cube_side_length
+                )
+                cube_mesh_est.translate(-cube_mesh_est.get_center())
+                cube_mesh_est.transform(T_final)
+                cube_mesh_est.paint_uniform_color([0.1, 0.4, 0.9])
+                estimated_cubes.append(cube_mesh_est)
+
+                # Remove points near the fitted cube to search for a second one
+                cube_pcd = cube_mesh_est.sample_points_uniformly(400)
+                distances = remaining_pcd.compute_point_cloud_distance(cube_pcd)
+                keep_indices = [i for i, d in enumerate(distances) if d > clearance]
+                remaining_pcd = remaining_pcd.select_by_index(keep_indices)
+                if len(remaining_pcd.points) < 30:
+                    break
 
         # Rendering
         pcd.paint_uniform_color([0.6, 0.6, 0.6])
