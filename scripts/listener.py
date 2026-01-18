@@ -27,6 +27,10 @@ class SingleCloudViewer:
                                            self._cloud_cb, queue_size=1)
 
         self._cube_side_length = rospy.get_param("~cube_side_length", 0.045)
+        self._camera_position = np.asarray(
+            rospy.get_param("~camera_position", [0.0, 0.0, 0.0]),
+            dtype=np.float64
+        )
 
         self._points: Optional[np.ndarray] = None
         self._cloud_ready = threading.Event()
@@ -129,6 +133,11 @@ class SingleCloudViewer:
                 cross_axis = np.array([0.0, 0.0, 1.0])
             axes.append(cross_axis)
 
+        if len(axes) == 1:
+            to_cam = self._camera_position - best_center
+            if np.linalg.norm(to_cam) > 1e-9 and float(np.dot(axes[0], to_cam)) < 0:
+                axes[0] *= -1.0
+
         axis_matrix = np.stack([a / (np.linalg.norm(a) + 1e-12) for a in axes], axis=1)
         U, _, Vt = np.linalg.svd(axis_matrix)
         R = U @ Vt
@@ -185,6 +194,7 @@ class SingleCloudViewer:
             clearance = 0.015  # meters to carve out points after a cube is fitted
             for cube_idx in range(max_cubes):
                 if len(remaining_pcd.points) < 30:
+                    rospy.loginfo("Cluster %d, cube %d: not enough points (%d) left", cluster_idx, cube_idx, len(remaining_pcd.points))
                     break
 
                 plane_infos = []
@@ -213,11 +223,13 @@ class SingleCloudViewer:
                     plane_infos.append({"normal": normal, "centroid": centroid})
 
                 if len(plane_infos) < 1:
+                    rospy.loginfo("Cluster %d, cube %d: no planes found", cluster_idx, cube_idx)
                     break
 
                 # Estimate cube pose from planes (works with 1–3 faces)
                 cube_pose = self._estimate_cube_pose(plane_infos)
                 if cube_pose is None:
+                    rospy.loginfo("Cluster %d, cube %d: cube_pose estimation failed", cluster_idx, cube_idx)
                     break
 
                 # Fit cube with ICP when pose exists
@@ -231,6 +243,7 @@ class SingleCloudViewer:
                 source_pcd = cube_mesh.sample_points_poisson_disk(1500)
                 target_pcd = remaining_pcd.voxel_down_sample(voxel_size=0.002)
                 if len(target_pcd.points) == 0:
+                    rospy.loginfo("Cluster %d, cube %d: target_pcd empty after downsample", cluster_idx, cube_idx)
                     break
                 target_pcd.estimate_normals(
                     o3d.geometry.KDTreeSearchParamHybrid(radius=0.015, max_nn=50)
@@ -252,10 +265,30 @@ class SingleCloudViewer:
                     icp_coarse.transformation,
                     o3d.pipelines.registration.TransformationEstimationPointToPlane()
                 )
-                if icp_result.fitness <= 0.2 or icp_result.inlier_rmse > 0.004:
-                    break
+                if icp_result.fitness <= 0.1 or icp_result.inlier_rmse > 0.005:
+                    icp_wide = o3d.pipelines.registration.registration_icp(
+                        source_pcd,
+                        target_pcd,
+                        0.01,
+                        icp_coarse.transformation,
+                        o3d.pipelines.registration.TransformationEstimationPointToPlane()
+                    )
+                    if icp_wide.fitness > icp_result.fitness:
+                        icp_result = icp_wide
+                best_T = icp_result.transformation
+                best_fit = icp_result.fitness
+                if icp_result.fitness <= 0.08:
+                    if icp_coarse.fitness > best_fit:
+                        best_fit = icp_coarse.fitness
+                        best_T = icp_coarse.transformation
+                use_fallback_pose = False
+                if best_fit <= 0.03:
+                    rospy.loginfo("Cluster %d, cube %d: weak cube fit (fitness=%.3f), using init pose", cluster_idx, cube_idx, best_fit)
+                    T_final = init_T.copy()
+                    use_fallback_pose = True
+                else:
+                    T_final = best_T.copy()
 
-                T_final = icp_result.transformation.copy()
                 R_fit = T_final[:3, :3]
                 U, _, Vt = np.linalg.svd(R_fit)
                 R_ortho = U @ Vt
