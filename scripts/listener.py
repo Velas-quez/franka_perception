@@ -27,6 +27,7 @@ class SingleCloudViewer:
                                            self._cloud_cb, queue_size=1)
 
         self._cube_side_length = rospy.get_param("~cube_side_length", 0.045)
+        self._axis_size = rospy.get_param("~axis_size", 0.1)
 
         self._points: Optional[np.ndarray] = None
         self._cloud_ready = threading.Event()
@@ -328,7 +329,11 @@ class SingleCloudViewer:
 
         # Rendering
         pcd.paint_uniform_color([0.6, 0.6, 0.6])
-        geometries = [pcd]
+        axis = o3d.geometry.TriangleMesh.create_coordinate_frame(
+            size=float(self._axis_size),
+            origin=[0.0, 0.0, 0.0],
+        )
+        geometries = [pcd, axis]
         geometries.extend(cluster_boxes)
         geometries.extend(obbs)
         geometries.extend(estimated_cubes)
