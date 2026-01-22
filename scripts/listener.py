@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Render the first received ZED2 point cloud with Open3D."""
 
-from itertools import combinations, product
+from itertools import combinations, permutations, product
 import threading
 from typing import Optional
 
@@ -27,10 +27,6 @@ class SingleCloudViewer:
                                            self._cloud_cb, queue_size=1)
 
         self._cube_side_length = rospy.get_param("~cube_side_length", 0.045)
-        self._camera_position = np.asarray(
-            rospy.get_param("~camera_position", [0.0, 0.0, 0.0]),
-            dtype=np.float64
-        )
 
         self._points: Optional[np.ndarray] = None
         self._cloud_ready = threading.Event()
@@ -98,54 +94,91 @@ class SingleCloudViewer:
         centroids = [p["centroid"] for p in chosen_planes]
         half_side = 0.5 * self._cube_side_length
 
-        # Try all sign combinations to find the most consistent center estimate.
-        best_center = None
-        best_normals = None
-        best_spread = np.inf
+        def _rotation_from_normals(ns):
+            ns = [n / (np.linalg.norm(n) + 1e-12) for n in ns]
+            m = len(ns)
+            best = None
+            for perm in permutations(range(m), m):
+                x = ns[perm[0]]
+                if m >= 2:
+                    y_raw = ns[perm[1]]
+                    y = y_raw - x * float(np.dot(x, y_raw))
+                    y_norm = np.linalg.norm(y)
+                    if y_norm < 1e-6:
+                        continue
+                    y /= y_norm
+                else:
+                    aux = np.array([1.0, 0.0, 0.0])
+                    if abs(float(np.dot(aux, x))) > 0.9:
+                        aux = np.array([0.0, 1.0, 0.0])
+                    y = np.cross(x, aux)
+                    y /= (np.linalg.norm(y) + 1e-12)
+
+                z = np.cross(x, y)
+                z_norm = np.linalg.norm(z)
+                if z_norm < 1e-6:
+                    continue
+                z /= z_norm
+
+                # Make it right-handed and aligned to normals as much as possible
+                if m == 3:
+                    n3 = ns[perm[2]]
+                    if float(np.dot(z, n3)) < 0:
+                        z *= -1.0
+                        y *= -1.0
+
+                R_candidate = np.stack([x, y, z], axis=1)
+                # Score by alignment (closer to 1 is better).
+                score = 0.0
+                score += 1.0 - abs(float(np.dot(R_candidate[:, 0], ns[perm[0]])))
+                if m >= 2:
+                    score += 1.0 - abs(float(np.dot(R_candidate[:, 1], ns[perm[1]])))
+                if m == 3:
+                    score += 1.0 - abs(float(np.dot(R_candidate[:, 2], ns[perm[2]])))
+                if best is None or score < best[0]:
+                    best = (score, R_candidate)
+            return None if best is None else best[1]
+
+        # Try all sign combinations to find a consistent center and a rotation aligned to planes.
+        best = None
         for signs in product([-1.0, 1.0], repeat=len(normals)):
-            candidate_normals = []
+            oriented_normals = []
             candidate_centers = []
             for n, c, s in zip(normals, centroids, signs):
                 oriented_n = s * n
-                candidate_normals.append(oriented_n)
+                oriented_normals.append(oriented_n)
                 candidate_centers.append(c - oriented_n * half_side)
+
             centers_arr = np.stack(candidate_centers)
             center_mean = centers_arr.mean(axis=0)
             spread = np.linalg.norm(centers_arr - center_mean, axis=1).mean()
-            if spread < best_spread:
-                best_spread = spread
-                best_center = center_mean
-                best_normals = candidate_normals
 
-        if best_center is None or best_normals is None:
+            R_candidate = _rotation_from_normals(oriented_normals)
+            if R_candidate is None:
+                continue
+
+            # Secondary score: prefer rotations that match plane normals tightly.
+            align_err = 0.0
+            for n in oriented_normals:
+                dots = np.abs(R_candidate.T @ n)
+                align_err += 1.0 - float(np.max(dots))
+
+            score = (spread, align_err)
+            if best is None or score < best[0]:
+                best = (score, R_candidate, center_mean)
+
+        if best is None:
             return None
 
-        axes = list(best_normals)
-        # Complete an orthonormal basis if fewer than 3 planes were seen.
-        if len(axes) == 1:
-            aux = np.array([1.0, 0.0, 0.0])
-            if abs(float(np.dot(aux, axes[0]))) > 0.9:
-                aux = np.array([0.0, 1.0, 0.0])
-            axes.append(np.cross(axes[0], aux))
-        if len(axes) == 2:
-            cross_axis = np.cross(axes[0], axes[1])
-            if np.linalg.norm(cross_axis) < 1e-6:
-                cross_axis = np.array([0.0, 0.0, 1.0])
-            axes.append(cross_axis)
-
-        if len(axes) == 1:
-            to_cam = self._camera_position - best_center
-            if np.linalg.norm(to_cam) > 1e-9 and float(np.dot(axes[0], to_cam)) < 0:
-                axes[0] *= -1.0
-
-        axis_matrix = np.stack([a / (np.linalg.norm(a) + 1e-12) for a in axes], axis=1)
-        U, _, Vt = np.linalg.svd(axis_matrix)
+        R, center = best[1], best[2]
+        # Final orthonormalization (numerical safety).
+        U, _, Vt = np.linalg.svd(R)
         R = U @ Vt
         if np.linalg.det(R) < 0:
             U[:, -1] *= -1
             R = U @ Vt
 
-        return R, best_center
+        return R, center
 
     def run(self) -> None:
         rospy.loginfo("Waiting for the first valid cloud...")
@@ -194,7 +227,6 @@ class SingleCloudViewer:
             clearance = 0.015  # meters to carve out points after a cube is fitted
             for cube_idx in range(max_cubes):
                 if len(remaining_pcd.points) < 30:
-                    rospy.loginfo("Cluster %d, cube %d: not enough points (%d) left", cluster_idx, cube_idx, len(remaining_pcd.points))
                     break
 
                 plane_infos = []
@@ -223,17 +255,19 @@ class SingleCloudViewer:
                     plane_infos.append({"normal": normal, "centroid": centroid})
 
                 if len(plane_infos) < 1:
-                    rospy.loginfo("Cluster %d, cube %d: no planes found", cluster_idx, cube_idx)
                     break
 
                 # Estimate cube pose from planes (works with 1–3 faces)
                 cube_pose = self._estimate_cube_pose(plane_infos)
                 if cube_pose is None:
-                    rospy.loginfo("Cluster %d, cube %d: cube_pose estimation failed", cluster_idx, cube_idx)
                     break
 
                 # Fit cube with ICP when pose exists
                 R_init, t_init = cube_pose
+                init_T = np.eye(4)
+                init_T[:3, :3] = R_init
+                init_T[:3, 3] = t_init
+
                 cube_mesh = o3d.geometry.TriangleMesh.create_box(
                     self._cube_side_length,
                     self._cube_side_length,
@@ -243,14 +277,10 @@ class SingleCloudViewer:
                 source_pcd = cube_mesh.sample_points_poisson_disk(1500)
                 target_pcd = remaining_pcd.voxel_down_sample(voxel_size=0.002)
                 if len(target_pcd.points) == 0:
-                    rospy.loginfo("Cluster %d, cube %d: target_pcd empty after downsample", cluster_idx, cube_idx)
                     break
                 target_pcd.estimate_normals(
                     o3d.geometry.KDTreeSearchParamHybrid(radius=0.015, max_nn=50)
                 )
-                init_T = np.eye(4)
-                init_T[:3, :3] = R_init
-                init_T[:3, 3] = t_init
                 icp_coarse = o3d.pipelines.registration.registration_icp(
                     source_pcd,
                     target_pcd,
@@ -265,29 +295,10 @@ class SingleCloudViewer:
                     icp_coarse.transformation,
                     o3d.pipelines.registration.TransformationEstimationPointToPlane()
                 )
-                if icp_result.fitness <= 0.1 or icp_result.inlier_rmse > 0.005:
-                    icp_wide = o3d.pipelines.registration.registration_icp(
-                        source_pcd,
-                        target_pcd,
-                        0.01,
-                        icp_coarse.transformation,
-                        o3d.pipelines.registration.TransformationEstimationPointToPlane()
-                    )
-                    if icp_wide.fitness > icp_result.fitness:
-                        icp_result = icp_wide
-                best_T = icp_result.transformation
-                best_fit = icp_result.fitness
-                if icp_result.fitness <= 0.08:
-                    if icp_coarse.fitness > best_fit:
-                        best_fit = icp_coarse.fitness
-                        best_T = icp_coarse.transformation
-                use_fallback_pose = False
-                if best_fit <= 0.03:
-                    rospy.loginfo("Cluster %d, cube %d: weak cube fit (fitness=%.3f), using init pose", cluster_idx, cube_idx, best_fit)
-                    T_final = init_T.copy()
-                    use_fallback_pose = True
-                else:
-                    T_final = best_T.copy()
+                if icp_result.fitness <= 0.2 or icp_result.inlier_rmse > 0.004:
+                    break
+
+                T_final = icp_result.transformation.copy()
 
                 R_fit = T_final[:3, :3]
                 U, _, Vt = np.linalg.svd(R_fit)
