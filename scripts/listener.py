@@ -203,30 +203,27 @@ class SingleCloudViewer:
                     plane_model, inliers = temp_pcd.segment_plane(distance_threshold=0.0005,
                                                         ransac_n=3,
                                                         num_iterations=1000)
-                    inlier_cloud = temp_pcd.select_by_index(inliers)
-                    outlier_cloud = temp_pcd.select_by_index(inliers, invert=True)
-                    temp_pcd = outlier_cloud
-                    
-                    if len(inlier_cloud.points) < 20:
-                        continue
-                    
-                    # Compute oriented bounding box
-                    obb = inlier_cloud.get_oriented_bounding_box()
-                    obb.color = (1, 0, 0)
-                    obbs.append(obb)
-                    normal = np.asarray(plane_model[:3], dtype=np.float64)
-                    normal_norm = np.linalg.norm(normal)
-                    if normal_norm < 1e-9:
-                        continue
-                    normal /= normal_norm
-                    centroid = np.asarray(inlier_cloud.points).mean(axis=0)
-                    plane_infos.append({"normal": normal, "centroid": centroid})
+                inlier_cloud = remaining_pcd.select_by_index(inliers)
+                outlier_cloud = remaining_pcd.select_by_index(inliers, invert=True)
+                remaining_pcd = outlier_cloud
+                
+                if len(inlier_cloud.points) < 20:
+                    continue
+                
+                # Compute oriented bounding box
+                obb = inlier_cloud.get_oriented_bounding_box()
+                obb.color = (1, 0, 0)
+                obbs.append(obb)
+                normal = np.asarray(plane_model[:3], dtype=np.float64)
+                normal_norm = np.linalg.norm(normal)
+                if normal_norm < 1e-9:
+                    continue
+                normal /= normal_norm
+                centroid = np.asarray(inlier_cloud.points).mean(axis=0)
+                plane_infos.append({"normal": normal, "centroid": centroid})
 
-                if len(plane_infos) < 1:
-                    rospy.loginfo("Cluster %d, cube %d: no planes found", cluster_idx, cube_idx)
-                    break
-
-                # Estimate cube pose from planes (works with 1–3 faces)
+            # Estimate cube pose from planes
+            if len(plane_infos) >= 3:
                 cube_pose = self._estimate_cube_pose(plane_infos)
                 if cube_pose is None:
                     rospy.loginfo("Cluster %d, cube %d: cube_pose estimation failed", cluster_idx, cube_idx)
