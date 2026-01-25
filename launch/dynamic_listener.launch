@@ -1,0 +1,13 @@
+<launch>
+  <node pkg="franka_perception" type="dynamic_listener_node.py" name="listener" output="screen">
+    <param name="cloud_topic"           value="/zed2/zed_node/point_cloud/cloud_registered" />
+    <param name="cube_side_length"      value="0.045" />
+    <param name="axis_size"             value="0.1" />
+    <param name="voxel_size"            value="0.002" />
+    <param name="cluster_eps"           value="0.005" />
+    <param name="cluster_min_points"    value="10" />
+    <param name="base_plane_distance"   value="0.01" />
+    <param name="max_cubes_per_cluster" value="2" />
+    <param name="clearance"             value="0.015" />
+  </node>
+</launch>
