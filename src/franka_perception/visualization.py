@@ -24,6 +24,8 @@ def build_geometries(result: CubeDetectionResult,
     geometries.append(axis)
     geometries.extend(result.cluster_boxes)
     geometries.extend(result.plane_obbs)
+    geometries.extend(result.failed_initial_meshes)
+    geometries.extend([c.initial_mesh for c in result.cubes if c.initial_mesh is not None])
     geometries.extend([c.mesh for c in result.cubes])
     return geometries
 

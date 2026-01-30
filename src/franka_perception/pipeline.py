@@ -19,6 +19,7 @@ class CubeDetectionResult:
     cluster_boxes: list
     plane_obbs: list
     cubes: List[CubeEstimate]
+    failed_initial_meshes: list
 
 
 class CubeDetectionPipeline:
@@ -60,10 +61,11 @@ class CubeDetectionPipeline:
 
         plane_obbs = []
         cubes: List[CubeEstimate] = []
+        failed_initial_meshes: list = []
         for cluster in clusters:
             print("Clustering...")
             tcluster = time.perf_counter()
-            estimates, obbs = fit_cubes_in_cluster(
+            estimates, obbs, failed_inits = fit_cubes_in_cluster(
                 cluster,
                 cube_side_length=self.cube_side_length,
                 max_cubes=self.max_cubes_per_cluster,
@@ -73,6 +75,7 @@ class CubeDetectionPipeline:
             )
             cubes.extend(estimates)
             plane_obbs.extend(obbs)
+            failed_initial_meshes.extend(failed_inits)
             print(f"cube_fitting: {time.perf_counter() - tcluster:.3f}s")
 
         return CubeDetectionResult(
@@ -80,4 +83,5 @@ class CubeDetectionPipeline:
             cluster_boxes=cluster_boxes,
             plane_obbs=plane_obbs,
             cubes=cubes,
+            failed_initial_meshes=failed_initial_meshes,
         )

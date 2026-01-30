@@ -2,7 +2,7 @@
 """Cube fitting utilities (ICP + cleanup)."""
 
 from dataclasses import dataclass
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 import numpy as np
 import open3d as o3d
@@ -15,6 +15,7 @@ from .plane_segmentation import PlaneDetection, segment_planes
 class CubeEstimate:
     transform: np.ndarray  # 4x4
     mesh: o3d.geometry.TriangleMesh
+    initial_mesh: Optional[o3d.geometry.TriangleMesh] = None
 
 
 def _orthonormalize(R: np.ndarray) -> np.ndarray:
@@ -31,11 +32,18 @@ def fit_cubes_in_cluster(cluster_pcd: o3d.geometry.PointCloud,
                          max_cubes: int = 2,
                          clearance: float = 0.015,
                          plane_distance: float = 0.0005,
-                         plane_min_inliers: int = 20) -> Tuple[List[CubeEstimate], List[o3d.geometry.OrientedBoundingBox]]:
-    """Fit up to max_cubes into the cluster using plane detection + ICP."""
+                         plane_min_inliers: int = 20) -> Tuple[List[CubeEstimate], List[o3d.geometry.OrientedBoundingBox], List[o3d.geometry.TriangleMesh]]:
+    """Fit up to max_cubes into the cluster using plane detection + ICP.
+
+    Returns:
+        estimates: Successful cube fits.
+        obbs: Plane bounding boxes for debugging.
+        failed_initial_meshes: Initial ICP guesses for fits that failed, rendered for debugging.
+    """
     remaining_pcd = cluster_pcd
     obbs: List[o3d.geometry.OrientedBoundingBox] = []
     estimates: List[CubeEstimate] = []
+    failed_initial_meshes: List[o3d.geometry.TriangleMesh] = []
 
     for _ in range(max_cubes):
         if len(remaining_pcd.points) < 30:
@@ -67,6 +75,16 @@ def fit_cubes_in_cluster(cluster_pcd: o3d.geometry.PointCloud,
         init_T[:3, :3] = R_init
         init_T[:3, 3] = t_init
 
+        # Initial ICP cube position mesh for rendering
+        cube_mesh_init = o3d.geometry.TriangleMesh.create_box(
+            cube_side_length,
+            cube_side_length,
+            cube_side_length
+        )
+        cube_mesh_init.translate(-cube_mesh_init.get_center())
+        cube_mesh_init.transform(init_T)
+        cube_mesh_init.paint_uniform_color([1.0, 0.6, 0.0])  # orange for "attempted"
+
         cube_mesh = o3d.geometry.TriangleMesh.create_box(
             cube_side_length,
             cube_side_length,
@@ -76,25 +94,31 @@ def fit_cubes_in_cluster(cluster_pcd: o3d.geometry.PointCloud,
         source_pcd = cube_mesh.sample_points_poisson_disk(1500)
         target_pcd = remaining_pcd.voxel_down_sample(voxel_size=0.002)
         if len(target_pcd.points) == 0:
+            failed_initial_meshes.append(cube_mesh_init)
             break
-        target_pcd.estimate_normals(
-            o3d.geometry.KDTreeSearchParamHybrid(radius=0.015, max_nn=50)
-        )
+        # target_pcd.estimate_normals(
+        #     o3d.geometry.KDTreeSearchParamHybrid(radius=0.015, max_nn=50)
+        # )
         icp_coarse = o3d.pipelines.registration.registration_icp(
             source_pcd,
             target_pcd,
             0.008,
             init_T,
-            o3d.pipelines.registration.TransformationEstimationPointToPlane()
+            o3d.pipelines.registration.TransformationEstimationPointToPoint()
         )
         icp_result = o3d.pipelines.registration.registration_icp(
             source_pcd,
             target_pcd,
             0.003,
             icp_coarse.transformation,
-            o3d.pipelines.registration.TransformationEstimationPointToPlane()
+            o3d.pipelines.registration.TransformationEstimationPointToPoint()
         )
+        used_estimator = "point_to_point"
+
         if icp_result.fitness <= 0.2 or icp_result.inlier_rmse > 0.004:
+            print(f"ICP {used_estimator} coarse: fitness={icp_coarse.fitness:.3f}, rmse={icp_coarse.inlier_rmse:.4f}")
+            print(f"ICP {used_estimator} poor: fitness={icp_result.fitness:.3f}, rmse={icp_result.inlier_rmse:.4f}")
+            failed_initial_meshes.append(cube_mesh_init)
             break
 
         T_final = icp_result.transformation.copy()
@@ -109,7 +133,13 @@ def fit_cubes_in_cluster(cluster_pcd: o3d.geometry.PointCloud,
         cube_mesh_est.transform(T_final)
         cube_mesh_est.paint_uniform_color([0.1, 0.4, 0.9])
 
-        estimates.append(CubeEstimate(transform=T_final, mesh=cube_mesh_est))
+        estimates.append(
+            CubeEstimate(
+                transform=T_final,
+                mesh=cube_mesh_est,
+                initial_mesh=cube_mesh_init,
+            )
+        )
 
         cube_pcd = cube_mesh_est.sample_points_uniformly(400)
         distances = remaining_pcd.compute_point_cloud_distance(cube_pcd)
@@ -118,4 +148,4 @@ def fit_cubes_in_cluster(cluster_pcd: o3d.geometry.PointCloud,
         if len(remaining_pcd.points) < 30:
             break
 
-    return estimates, obbs
+    return estimates, obbs, failed_initial_meshes
