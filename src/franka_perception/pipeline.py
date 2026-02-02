@@ -41,9 +41,31 @@ class CubeDetectionPipeline:
         self.max_cubes_per_cluster = max_cubes_per_cluster
         self.clearance = clearance
 
-    def process(self, points: np.ndarray) -> CubeDetectionResult:
+    def process(self, points: np.ndarray, stop_after: str = "all") -> CubeDetectionResult:
+        """Run the detection pipeline up to a chosen stage.
+
+        stop_after options:
+            - "none": return the raw cloud without any processing.
+            - "filter": stop after filtering/plane removal.
+            - "cluster": stop after clustering.
+            - "all": run the full pipeline (default).
+        """
+        stage = stop_after.lower()
+        if stage not in {"none", "filter", "cluster", "all"}:
+            raise ValueError(f"Invalid stop_after '{stop_after}'. "
+                             "Choose from: none, filter, cluster, all.")
+
         pcd = o3d.geometry.PointCloud()
         pcd.points = o3d.utility.Vector3dVector(points)
+
+        if stage == "none":
+            return CubeDetectionResult(
+                filtered_cloud=pcd,
+                cluster_boxes=[],
+                plane_obbs=[],
+                cubes=[],
+                failed_initial_meshes=[],
+            )
 
         # Apply basic filtering and table plane removal
         print("Filtering point cloud...")
@@ -55,9 +77,33 @@ class CubeDetectionPipeline:
                                             num_iterations=1000)
         filtered = filtered.select_by_index(inliers, invert=True)
 
+        if stage == "filter":
+            return CubeDetectionResult(
+                filtered_cloud=filtered,
+                cluster_boxes=[],
+                plane_obbs=[],
+                cubes=[],
+                failed_initial_meshes=[],
+            )
+
         cluster_boxes, clusters = cluster_point_cloud(
             filtered, eps=self.cluster_eps, min_points=self.cluster_min_points, render_boxes=False)
         print(f"filter_point_cloud: {time.perf_counter() - t0:.3f}s")
+
+        if stage == "cluster":
+            cluster_cloud = o3d.geometry.PointCloud()
+            if clusters:
+                cluster_points = np.vstack([np.asarray(c.points) for c in clusters])
+                cluster_cloud.points = o3d.utility.Vector3dVector(cluster_points)
+            else:
+                cluster_cloud = filtered
+            return CubeDetectionResult(
+                filtered_cloud=cluster_cloud,
+                cluster_boxes=cluster_boxes,
+                plane_obbs=[],
+                cubes=[],
+                failed_initial_meshes=[],
+            )
 
         plane_obbs = []
         cubes: List[CubeEstimate] = []

@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Render the first received ZED2 point cloud with Open3D using shared pipeline."""
 
+import argparse
 import sys
 import threading
-from pathlib import Path
 from typing import Optional
 
 import numpy as np
@@ -19,8 +19,9 @@ from franka_perception.visualization import draw
 class SingleCloudNode:
     """Subscribe to a point cloud, process once, then render."""
 
-    def __init__(self) -> None:
+    def __init__(self, stage: str = "all") -> None:
         self.params = load_params()
+        self.stage = stage
         self.pipeline = CubeDetectionPipeline(
             cube_side_length=self.params.cube_side_length,
             voxel_size=self.params.voxel_size,
@@ -70,16 +71,29 @@ class SingleCloudNode:
             rospy.logerr("No valid point cloud received before shutdown")
             return
 
-        result = self.pipeline.process(points)
+        rospy.loginfo("Rendering pipeline stage: %s", self.stage)
+        result = self.pipeline.process(points, stop_after=self.stage)
         try:
             draw(result, axis_size=self.params.axis_size)
         except Exception as exc:
             rospy.logerr("Failed to render point cloud: %s", exc)
 
 
+def _parse_args():
+    parser = argparse.ArgumentParser(description="Render a ZED point cloud through the cube pipeline.")
+    parser.add_argument(
+        "--stage",
+        choices=["none", "filter", "cluster", "all"],
+        default="all",
+        help="Stop the pipeline after this stage for visualization.",
+    )
+    return parser.parse_args(rospy.myargv(argv=sys.argv)[1:])
+
+
 def main() -> None:
+    args = _parse_args()
     rospy.init_node("listener", anonymous=False)
-    node = SingleCloudNode()
+    node = SingleCloudNode(stage=args.stage)
     node.run()
 
 
