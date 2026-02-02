@@ -41,9 +41,11 @@ class CubeDetectionPipeline:
         self.max_cubes_per_cluster = max_cubes_per_cluster
         self.clearance = clearance
 
-    def process(self, points: np.ndarray) -> CubeDetectionResult:
+    def process(self, points: np.ndarray, colors: Optional[np.ndarray] = None) -> CubeDetectionResult:
         pcd = o3d.geometry.PointCloud()
         pcd.points = o3d.utility.Vector3dVector(points)
+        if colors is not None and len(colors) == len(points):
+            pcd.colors = o3d.utility.Vector3dVector(colors)
 
         # Apply basic filtering and table plane removal
         print("Filtering point cloud...")

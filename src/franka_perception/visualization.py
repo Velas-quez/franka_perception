@@ -30,8 +30,8 @@ def build_geometries(result: CubeDetectionResult,
     return geometries
 
 
-def draw(result: CubeDetectionResult, axis_size: float = 0.1) -> None:
-    geoms = build_geometries(result, axis_size=axis_size)
+def draw(result: CubeDetectionResult, axis_size: float = 0.1, paint_cloud: bool = True) -> None:
+    geoms = build_geometries(result, axis_size=axis_size, paint_cloud=paint_cloud)
     o3d.visualization.draw_geometries(
         geoms,
         window_name="ZED Point Cloud",
