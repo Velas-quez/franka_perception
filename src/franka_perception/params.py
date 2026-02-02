@@ -9,6 +9,7 @@ import rospy
 @dataclass
 class PerceptionParams:
     cloud_topic: str
+    target_frame: str
     cube_side_length: float
     axis_size: float
     voxel_size: float
@@ -26,6 +27,7 @@ def load_params(ns: str = "~") -> PerceptionParams:
 
     return PerceptionParams(
         cloud_topic=_p("cloud_topic", "/zed2/zed_node/point_cloud/cloud_registered"),
+        target_frame=_p("target_frame", "world"),
         cube_side_length=float(_p("cube_side_length", 0.045)),
         axis_size=float(_p("axis_size", 0.1)),
         voxel_size=float(_p("voxel_size", 0.002)),

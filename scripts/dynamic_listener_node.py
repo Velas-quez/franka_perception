@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """Process point clouds continuously and publish cube poses/markers."""
 
-import sys
 import threading
-from pathlib import Path
-from typing import Optional
+from typing import Optional, Iterable
 
 import numpy as np
 import rospy
+import tf2_ros
+import tf.transformations as tf_trans
 from geometry_msgs.msg import PoseArray
 from sensor_msgs.msg import PointCloud2
 from std_msgs.msg import Header
@@ -17,6 +17,7 @@ from franka_perception.cloud_io import msg_to_xyz, has_points
 from franka_perception.params import load_params
 from franka_perception.pipeline import CubeDetectionPipeline
 from franka_perception.publishers import publish_markers, publish_poses
+from franka_perception.cube_fitting import CubeEstimate
 
 
 class DynamicListenerNode:
@@ -37,6 +38,9 @@ class DynamicListenerNode:
         self._latest_header: Optional[Header] = None
         self._cloud_ready = threading.Event()
         self._lock = threading.Lock()
+
+        self._tf_buffer = tf2_ros.Buffer()
+        self._tf_listener = tf2_ros.TransformListener(self._tf_buffer)
 
         self._pose_pub = rospy.Publisher("~cube_poses", PoseArray, queue_size=5)
         self._marker_pub = rospy.Publisher("~cube_markers", MarkerArray, queue_size=5)
@@ -74,8 +78,56 @@ class DynamicListenerNode:
                 continue
 
             result = self.pipeline.process(points)
-            publish_poses(result.cubes, header, self.params.cube_side_length, self._pose_pub)
-            publish_markers(result.cubes, header, self.params.cube_side_length, self._marker_pub)
+            cubes_base, header_base = self._transform_cubes_to_target(result.cubes, header)
+            publish_poses(cubes_base, header_base, self.params.cube_side_length, self._pose_pub)
+            publish_markers(cubes_base, header_base, self.params.cube_side_length, self._marker_pub)
+
+    def _transform_cubes_to_target(self,
+                                   cubes: Iterable[CubeEstimate],
+                                   header: Optional[Header]):
+        """Transform estimated cube poses to target frame only (cheap)."""
+        if header is None:
+            return cubes, header
+
+        try:
+            tf_msg = self._tf_buffer.lookup_transform(
+                self.params.target_frame,
+                header.frame_id,
+                header.stamp,
+                rospy.Duration(0.2),
+            )
+        except (tf2_ros.LookupException, tf2_ros.ExtrapolationException, tf2_ros.ConnectivityException) as exc:
+            rospy.logwarn("TF lookup failed (%s -> %s): %s",
+                          header.frame_id, self.params.target_frame, exc)
+            return cubes, header
+
+        T = _transform_to_matrix(tf_msg)
+        transformed = []
+        for cube in cubes:
+            new_T = T @ cube.transform
+            transformed.append(
+                CubeEstimate(
+                    transform=new_T,
+                    mesh=cube.mesh,
+                    initial_mesh=cube.initial_mesh,
+                )
+            )
+
+        new_header = Header()
+        new_header.frame_id = self.params.target_frame
+        new_header.stamp = header.stamp
+        return transformed, new_header
+
+
+def _transform_to_matrix(tf_msg):
+    """Convert TransformStamped to 4x4 matrix."""
+    trans = tf_msg.transform.translation
+    rot = tf_msg.transform.rotation
+    T = tf_trans.quaternion_matrix([rot.x, rot.y, rot.z, rot.w])
+    T[0, 3] = trans.x
+    T[1, 3] = trans.y
+    T[2, 3] = trans.z
+    return T
 
 
 def main() -> None:
