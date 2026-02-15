@@ -11,7 +11,7 @@ def cluster_point_cloud(pcd: o3d.geometry.PointCloud,
                         eps: float = 0.02,
                         min_points: int = 10,
                         max_points: Optional[int] = 7000,
-                        render_boxes: bool = False) -> Tuple[list, List[o3d.geometry.PointCloud]]:
+                        render_boxes: bool = True) -> Tuple[list, List[o3d.geometry.PointCloud]]:
     """Cluster the point cloud using DBSCAN."""
     labels = np.array(
         pcd.cluster_dbscan(eps=eps, min_points=min_points, print_progress=False)

@@ -86,8 +86,13 @@ class CubeDetectionPipeline:
                 failed_initial_meshes=[],
             )
 
+        render_boxes = stage in {"cluster", "all"}
         cluster_boxes, clusters = cluster_point_cloud(
-            filtered, eps=self.cluster_eps, min_points=self.cluster_min_points, render_boxes=False)
+            filtered,
+            eps=self.cluster_eps,
+            min_points=self.cluster_min_points,
+            render_boxes=render_boxes,
+        )
         print(f"filter_point_cloud: {time.perf_counter() - t0:.3f}s")
 
         if stage == "cluster":

@@ -9,7 +9,7 @@ def filter_point_cloud(point_cloud: o3d.geometry.PointCloud,
                        voxel_size: float = 0.003,
                        nb_neighbors: int = 20,
                        std_ratio: float = 2.0,
-                       max_dist: float = 1.2) -> o3d.geometry.PointCloud:
+                       max_dist: float = 1) -> o3d.geometry.PointCloud:
     """Voxel downsample + distance filter + statistical outlier removal."""
     downsampled_pc = point_cloud.voxel_down_sample(voxel_size=voxel_size)
 
