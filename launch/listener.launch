@@ -22,5 +22,20 @@
     <param name="base_plane_distance"   value="0.01" />
     <param name="max_cubes_per_cluster" value="2" />
     <param name="clearance"             value="0.015" />
+    <param name="use_sam_segmentation"  value="false" />
+    <param name="sam_checkpoint_path"   value="" />
+    <param name="sam_model_type"        value="vit_b" />
+    <param name="sam_device"            value="cuda" />
+    <param name="sam_points_per_side"   value="32" />
+    <param name="sam_pred_iou_thresh"   value="0.86" />
+    <param name="sam_stability_score_thresh" value="0.92" />
+    <param name="sam_min_mask_region_area" value="100" />
+    <param name="sam_max_masks"         value="20" />
+    <param name="mask_min_area_pixels"  value="200" />
+    <param name="mask_erosion_kernel"   value="3" />
+    <param name="mask_erosion_iterations" value="1" />
+    <param name="mask_min_points"       value="30" />
+    <param name="sam_debug_logs"        value="true" />
+    <param name="sam_show_masks_window" value="false" />
   </node>
 </launch>

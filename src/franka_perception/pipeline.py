@@ -110,6 +110,51 @@ class CubeDetectionPipeline:
                 failed_initial_meshes=[],
             )
 
+        return self.process_preclustered_clusters(
+            clusters,
+            stop_after=stage,
+            filtered_cloud=filtered,
+            cluster_boxes=cluster_boxes,
+        )
+
+    def process_preclustered_clusters(
+        self,
+        clusters: List[o3d.geometry.PointCloud],
+        stop_after: str = "all",
+        filtered_cloud: Optional[o3d.geometry.PointCloud] = None,
+        cluster_boxes: Optional[list] = None,
+    ) -> CubeDetectionResult:
+        """Run the back half of the pipeline on precomputed clusters.
+
+        This is useful when clusters come from 2D segmentation masks projected
+        through depth (for example, SAM masks on RGB-D frames).
+        """
+        stage = stop_after.lower()
+        if stage not in {"cluster", "all"}:
+            raise ValueError(f"Invalid stop_after '{stop_after}' for preclustered input. "
+                             "Choose from: cluster, all.")
+
+        boxes = cluster_boxes if cluster_boxes is not None else []
+        cloud = filtered_cloud if filtered_cloud is not None else self._merge_clusters(clusters)
+        if stage == "cluster":
+            return CubeDetectionResult(
+                filtered_cloud=cloud,
+                cluster_boxes=boxes,
+                plane_obbs=[],
+                cubes=[],
+                failed_initial_meshes=[],
+            )
+
+        plane_obbs, cubes, failed_initial_meshes = self._fit_clusters(clusters)
+        return CubeDetectionResult(
+            filtered_cloud=cloud,
+            cluster_boxes=boxes,
+            plane_obbs=plane_obbs,
+            cubes=cubes,
+            failed_initial_meshes=failed_initial_meshes,
+        )
+
+    def _fit_clusters(self, clusters: List[o3d.geometry.PointCloud]):
         plane_obbs = []
         cubes: List[CubeEstimate] = []
         failed_initial_meshes: list = []
@@ -128,11 +173,18 @@ class CubeDetectionPipeline:
             plane_obbs.extend(obbs)
             failed_initial_meshes.extend(failed_inits)
             print(f"cube_fitting: {time.perf_counter() - tcluster:.3f}s")
+        return plane_obbs, cubes, failed_initial_meshes
 
-        return CubeDetectionResult(
-            filtered_cloud=filtered,
-            cluster_boxes=cluster_boxes,
-            plane_obbs=plane_obbs,
-            cubes=cubes,
-            failed_initial_meshes=failed_initial_meshes,
-        )
+    @staticmethod
+    def _merge_clusters(clusters: List[o3d.geometry.PointCloud]) -> o3d.geometry.PointCloud:
+        cloud = o3d.geometry.PointCloud()
+        if not clusters:
+            return cloud
+        cluster_points = []
+        for cluster in clusters:
+            points = np.asarray(cluster.points)
+            if points.size:
+                cluster_points.append(points)
+        if cluster_points:
+            cloud.points = o3d.utility.Vector3dVector(np.vstack(cluster_points))
+        return cloud

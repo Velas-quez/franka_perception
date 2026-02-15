@@ -14,6 +14,11 @@ import message_filters
 from franka_perception.cloud_io import msg_to_xyz, has_points, rgbd_msgs_to_xyz
 from franka_perception.params import load_params
 from franka_perception.pipeline import CubeDetectionPipeline
+from franka_perception.rgbd_inputs import image_msgs_to_numpy
+from franka_perception.rgbd_masking import camera_info_to_intrinsics
+from franka_perception.sam_rgbd_pipeline import SamRgbdCubePipeline
+from franka_perception.sam_segmentation import SamSegmenter
+from franka_perception.sam_visualization import show_masks_window
 from franka_perception.visualization import draw
 
 
@@ -33,6 +38,9 @@ class SingleCloudNode:
             clearance=self.params.clearance,
         )
         self._points: Optional[np.ndarray] = None
+        self._rgb_image: Optional[np.ndarray] = None
+        self._depth_image: Optional[np.ndarray] = None
+        self._inferred_depth_scale: Optional[float] = None
         self._cloud_ready = threading.Event()
         self._lock = threading.Lock()
 
@@ -42,6 +50,32 @@ class SingleCloudNode:
         self._info_sub = None
         self._sync = None
         self._latest_info: Optional[CameraInfo] = None
+        self._sam_rgbd_pipeline: Optional[SamRgbdCubePipeline] = None
+        self._sam_segmenter: Optional[SamSegmenter] = None
+
+        if self.params.use_sam_segmentation:
+            if not self.params.use_rgbd:
+                raise RuntimeError("use_sam_segmentation requires use_rgbd=true")
+            if not self.params.sam_checkpoint_path:
+                raise RuntimeError("sam_checkpoint_path must be set when use_sam_segmentation=true")
+            self._sam_segmenter = SamSegmenter(
+                checkpoint_path=self.params.sam_checkpoint_path,
+                model_type=self.params.sam_model_type,
+                device=self.params.sam_device,
+                points_per_side=self.params.sam_points_per_side,
+                pred_iou_thresh=self.params.sam_pred_iou_thresh,
+                stability_score_thresh=self.params.sam_stability_score_thresh,
+                min_mask_region_area=self.params.sam_min_mask_region_area,
+                verbose=self.params.sam_debug_logs,
+            )
+            self._sam_rgbd_pipeline = SamRgbdCubePipeline(
+                self.pipeline,
+                verbose=self.params.sam_debug_logs,
+            )
+            rospy.loginfo("Pipeline mode: SAM+RGBD segmentation")
+            rospy.loginfo("SAM checkpoint: %s", self.params.sam_checkpoint_path)
+        else:
+            rospy.loginfo("Pipeline mode: classic point-cloud filtering+clustering")
 
         if self.params.use_rgbd:
             self._rgb_sub = message_filters.Subscriber(self.params.rgb_topic, Image)
@@ -87,22 +121,32 @@ class SingleCloudNode:
             rospy.logwarn_throttle(2.0, "Waiting for camera_info on %s",
                                    self.params.camera_info_topic)
             return
-        depth_scale = self.params.depth_scale if self.params.depth_scale > 0.0 else None
-        points = rgbd_msgs_to_xyz(
-            rgb_msg,
-            depth_msg,
-            info_msg,
-            depth_scale=depth_scale,
-            depth_trunc=self.params.depth_trunc,
-            flip=self.params.rgbd_flip,
-        )
-        if not has_points(points):
-            rospy.logwarn("Received empty/invalid RGB-D; ignoring")
-            return
-        with self._lock:
-            self._points = points
-            self._cloud_ready.set()
-        rospy.loginfo("Captured RGB-D cloud with %d points", points.shape[0])
+        if self.params.use_sam_segmentation:
+            rgb_np, depth_np, inferred_depth_scale = image_msgs_to_numpy(rgb_msg, depth_msg)
+            with self._lock:
+                self._rgb_image = rgb_np
+                self._depth_image = depth_np
+                self._inferred_depth_scale = inferred_depth_scale
+                self._cloud_ready.set()
+            rospy.loginfo("Captured RGB-D frame for SAM segmentation (%dx%d)",
+                          rgb_np.shape[1], rgb_np.shape[0])
+        else:
+            depth_scale = self.params.depth_scale if self.params.depth_scale > 0.0 else None
+            points = rgbd_msgs_to_xyz(
+                rgb_msg,
+                depth_msg,
+                info_msg,
+                depth_scale=depth_scale,
+                depth_trunc=self.params.depth_trunc,
+                flip=self.params.rgbd_flip,
+            )
+            if not has_points(points):
+                rospy.logwarn("Received empty/invalid RGB-D; ignoring")
+                return
+            with self._lock:
+                self._points = points
+                self._cloud_ready.set()
+            rospy.loginfo("Captured RGB-D cloud with %d points", points.shape[0])
         for sub in (self._rgb_sub, self._depth_sub):
             try:
                 if sub is not None:
@@ -126,13 +170,47 @@ class SingleCloudNode:
 
         with self._lock:
             points = self._points.copy() if self._points is not None else None
-
-        if not has_points(points):
-            rospy.logerr("No valid point cloud received before shutdown")
-            return
+            rgb = self._rgb_image.copy() if self._rgb_image is not None else None
+            depth = self._depth_image.copy() if self._depth_image is not None else None
+            info = self._latest_info
+            inferred_depth_scale = self._inferred_depth_scale
 
         rospy.loginfo("Rendering pipeline stage: %s", self.stage)
-        result = self.pipeline.process(points, stop_after=self.stage)
+        if self.params.use_sam_segmentation:
+            if self.stage not in {"cluster", "all"}:
+                raise ValueError("With use_sam_segmentation=true, --stage must be 'cluster' or 'all'")
+            if rgb is None or depth is None or info is None:
+                rospy.logerr("Missing RGB-D data/camera_info for SAM pipeline")
+                return
+            intrinsics = camera_info_to_intrinsics(info)
+            depth_scale = self.params.depth_scale if self.params.depth_scale > 0.0 else inferred_depth_scale
+            result, debug = self._sam_rgbd_pipeline.process(
+                rgb_image=rgb,
+                depth_image=depth,
+                intrinsics=intrinsics,
+                segmenter=self._sam_segmenter,
+                stop_after=self.stage,
+                min_area_pixels=self.params.mask_min_area_pixels,
+                max_masks=self.params.sam_max_masks,
+                erosion_kernel=self.params.mask_erosion_kernel,
+                erosion_iterations=self.params.mask_erosion_iterations,
+                depth_scale=depth_scale,
+                depth_trunc=self.params.depth_trunc,
+                min_cluster_points=self.params.mask_min_points,
+                flip=self.params.rgbd_flip,
+            )
+            rospy.loginfo("SAM masks=%d, clusters=%d, cubes=%d",
+                          len(debug.raw_masks), len(debug.clusters), len(result.cubes))
+            if self.params.sam_show_masks_window:
+                try:
+                    show_masks_window(rgb, debug.eroded_masks, window_name="SAM Masks (Eroded)")
+                except Exception as exc:
+                    rospy.logwarn("Failed to render SAM mask window: %s", exc)
+        else:
+            if not has_points(points):
+                rospy.logerr("No valid point cloud received before shutdown")
+                return
+            result = self.pipeline.process(points, stop_after=self.stage)
         try:
             draw(result, axis_size=self.params.axis_size)
         except Exception as exc:
