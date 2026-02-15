@@ -15,11 +15,15 @@ from .filtering import filter_point_cloud
 
 @dataclass
 class CubeDetectionResult:
+    original_cloud: o3d.geometry.PointCloud
     filtered_cloud: o3d.geometry.PointCloud
     cluster_boxes: list
     plane_obbs: list
     cubes: List[CubeEstimate]
     failed_initial_meshes: list
+    plane_model: Optional[np.ndarray] = None
+    plane_inlier_indices: Optional[np.ndarray] = None
+    plane_inlier_cloud: Optional[o3d.geometry.PointCloud] = None
 
 
 class CubeDetectionPipeline:
@@ -32,7 +36,9 @@ class CubeDetectionPipeline:
                  cluster_eps: float = 0.005,
                  cluster_min_points: int = 10,
                  max_cubes_per_cluster: int = 2,
-                 clearance: float = 0.015) -> None:
+                 clearance: float = 0.015,
+                 max_cluster_distance_from_plane_inliers: float = 0.08,
+                 below_plane_tolerance: float = 0.002) -> None:
         self.cube_side_length = cube_side_length
         self.voxel_size = voxel_size
         self.base_plane_distance = base_plane_distance
@@ -40,6 +46,8 @@ class CubeDetectionPipeline:
         self.cluster_min_points = cluster_min_points
         self.max_cubes_per_cluster = max_cubes_per_cluster
         self.clearance = clearance
+        self.max_cluster_distance_from_plane_inliers = max_cluster_distance_from_plane_inliers
+        self.below_plane_tolerance = below_plane_tolerance
 
     def process(self, points: np.ndarray, stop_after: str = "all") -> CubeDetectionResult:
         """Run the detection pipeline up to a chosen stage.
@@ -60,11 +68,15 @@ class CubeDetectionPipeline:
 
         if stage == "none":
             return CubeDetectionResult(
+                original_cloud=pcd,
                 filtered_cloud=pcd,
                 cluster_boxes=[],
                 plane_obbs=[],
                 cubes=[],
                 failed_initial_meshes=[],
+                plane_model=None,
+                plane_inlier_indices=None,
+                plane_inlier_cloud=None,
             )
 
         # Apply basic filtering and table plane removal
@@ -72,18 +84,23 @@ class CubeDetectionPipeline:
         t0 = time.perf_counter()
         filtered = filter_point_cloud(pcd, voxel_size=self.voxel_size)
 
-        _, inliers = filtered.segment_plane(distance_threshold=self.base_plane_distance,
-                                            ransac_n=3,
-                                            num_iterations=1000)
+        plane_model, inliers = filtered.segment_plane(distance_threshold=self.base_plane_distance,
+                                                      ransac_n=3,
+                                                      num_iterations=1000)
+        plane_inlier_cloud = filtered.select_by_index(inliers)
         filtered = filtered.select_by_index(inliers, invert=True)
 
         if stage == "filter":
             return CubeDetectionResult(
+                original_cloud=pcd,
                 filtered_cloud=filtered,
                 cluster_boxes=[],
                 plane_obbs=[],
                 cubes=[],
                 failed_initial_meshes=[],
+                plane_model=np.asarray(plane_model, dtype=float),
+                plane_inlier_indices=np.asarray(inliers, dtype=int),
+                plane_inlier_cloud=plane_inlier_cloud,
             )
 
         render_boxes = stage in {"cluster", "all"}
@@ -92,6 +109,10 @@ class CubeDetectionPipeline:
             eps=self.cluster_eps,
             min_points=self.cluster_min_points,
             render_boxes=render_boxes,
+            plane_model=np.asarray(plane_model, dtype=float),
+            plane_inlier_points=np.asarray(plane_inlier_cloud.points),
+            below_plane_tolerance=self.below_plane_tolerance,
+            max_distance_from_inliers=self.max_cluster_distance_from_plane_inliers,
         )
         print(f"filter_point_cloud: {time.perf_counter() - t0:.3f}s")
 
@@ -103,11 +124,15 @@ class CubeDetectionPipeline:
             else:
                 cluster_cloud = filtered
             return CubeDetectionResult(
+                original_cloud=pcd,
                 filtered_cloud=cluster_cloud,
                 cluster_boxes=cluster_boxes,
                 plane_obbs=[],
                 cubes=[],
                 failed_initial_meshes=[],
+                plane_model=np.asarray(plane_model, dtype=float),
+                plane_inlier_indices=np.asarray(inliers, dtype=int),
+                plane_inlier_cloud=plane_inlier_cloud,
             )
 
         plane_obbs = []
@@ -130,9 +155,13 @@ class CubeDetectionPipeline:
             print(f"cube_fitting: {time.perf_counter() - tcluster:.3f}s")
 
         return CubeDetectionResult(
+            original_cloud=pcd,
             filtered_cloud=filtered,
             cluster_boxes=cluster_boxes,
             plane_obbs=plane_obbs,
             cubes=cubes,
             failed_initial_meshes=failed_initial_meshes,
+            plane_model=np.asarray(plane_model, dtype=float),
+            plane_inlier_indices=np.asarray(inliers, dtype=int),
+            plane_inlier_cloud=plane_inlier_cloud,
         )

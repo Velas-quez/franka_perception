@@ -23,6 +23,8 @@ class PerceptionParams:
     cluster_eps: float
     cluster_min_points: int
     base_plane_distance: float
+    below_plane_tolerance: float
+    max_cluster_distance_from_plane_inliers: float
     max_cubes_per_cluster: int
     clearance: float
 
@@ -48,6 +50,9 @@ def load_params(ns: str = "~") -> PerceptionParams:
         cluster_eps=float(_p("cluster_eps", 0.005)),
         cluster_min_points=int(_p("cluster_min_points", 10)),
         base_plane_distance=float(_p("base_plane_distance", 0.01)),
+        below_plane_tolerance=float(_p("below_plane_tolerance", 0.002)),
+        max_cluster_distance_from_plane_inliers=float(
+            _p("max_cluster_distance_from_plane_inliers", 0.08)),
         max_cubes_per_cluster=int(_p("max_cubes_per_cluster", 2)),
         clearance=float(_p("clearance", 0.015)),
     )

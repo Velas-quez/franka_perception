@@ -48,6 +48,8 @@ roslaunch franka_perception listener.launch stage:=cluster
 - `voxel_size`: downsample size.
 - `cluster_eps`, `cluster_min_points`: DBSCAN.
 - `base_plane_distance`: threshold to remove the table plane.
+- `below_plane_tolerance`: rejects clusters below the segmented plane.
+- `max_cluster_distance_from_plane_inliers`: rejects clusters too far from plane inliers.
 - `max_cubes_per_cluster`, `clearance`: fitting limits and clearance.
 - `axis_size`: coordinate frame size in Open3D.
 

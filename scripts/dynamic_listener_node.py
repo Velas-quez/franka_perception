@@ -34,6 +34,8 @@ class DynamicListenerNode:
             cluster_min_points=self.params.cluster_min_points,
             max_cubes_per_cluster=self.params.max_cubes_per_cluster,
             clearance=self.params.clearance,
+            max_cluster_distance_from_plane_inliers=self.params.max_cluster_distance_from_plane_inliers,
+            below_plane_tolerance=self.params.below_plane_tolerance,
         )
         self._points: Optional[np.ndarray] = None
         self._latest_header: Optional[Header] = None

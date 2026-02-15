@@ -20,9 +20,13 @@ from franka_perception.visualization import draw
 class SingleCloudNode:
     """Subscribe to a point cloud, process once, then render."""
 
-    def __init__(self, stage: str = "all") -> None:
+    def __init__(self, stage: str = "all", show_original_cloud: Optional[bool] = None) -> None:
         self.params = load_params()
         self.stage = stage
+        if show_original_cloud is None:
+            self.show_original_cloud = bool(rospy.get_param("~show_original_cloud", False))
+        else:
+            self.show_original_cloud = bool(show_original_cloud)
         self.pipeline = CubeDetectionPipeline(
             cube_side_length=self.params.cube_side_length,
             voxel_size=self.params.voxel_size,
@@ -31,6 +35,8 @@ class SingleCloudNode:
             cluster_min_points=self.params.cluster_min_points,
             max_cubes_per_cluster=self.params.max_cubes_per_cluster,
             clearance=self.params.clearance,
+            max_cluster_distance_from_plane_inliers=self.params.max_cluster_distance_from_plane_inliers,
+            below_plane_tolerance=self.params.below_plane_tolerance,
         )
         self._points: Optional[np.ndarray] = None
         self._cloud_ready = threading.Event()
@@ -134,7 +140,11 @@ class SingleCloudNode:
         rospy.loginfo("Rendering pipeline stage: %s", self.stage)
         result = self.pipeline.process(points, stop_after=self.stage)
         try:
-            draw(result, axis_size=self.params.axis_size)
+            draw(
+                result,
+                axis_size=self.params.axis_size,
+                show_original_cloud=self.show_original_cloud,
+            )
         except Exception as exc:
             rospy.logerr("Failed to render point cloud: %s", exc)
 
@@ -147,13 +157,18 @@ def _parse_args():
         default="all",
         help="Stop the pipeline after this stage for visualization.",
     )
+    parser.add_argument(
+        "--show-original-cloud",
+        action="store_true",
+        help="Render the original cloud instead of the filtered cloud.",
+    )
     return parser.parse_args(rospy.myargv(argv=sys.argv)[1:])
 
 
 def main() -> None:
     args = _parse_args()
     rospy.init_node("listener", anonymous=False)
-    node = SingleCloudNode(stage=args.stage)
+    node = SingleCloudNode(stage=args.stage, show_original_cloud=args.show_original_cloud)
     node.run()
 
 
