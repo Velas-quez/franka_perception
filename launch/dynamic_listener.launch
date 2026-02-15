@@ -1,6 +1,13 @@
 <launch>
   <node pkg="franka_perception" type="dynamic_listener_node.py" name="listener" output="screen">
+    <param name="use_rgbd"             value="false" />
     <param name="cloud_topic"           value="/zed2/zed_node/point_cloud/cloud_registered" />
+    <param name="rgb_topic"             value="/zed2/zed_node/rgb/image_rect_color" />
+    <param name="depth_topic"           value="/zed2/zed_node/depth/depth_registered" />
+    <param name="camera_info_topic"     value="/zed2/zed_node/rgb/camera_info" />
+    <param name="depth_scale"           value="0.0" />
+    <param name="depth_trunc"           value="3.0" />
+    <param name="rgbd_flip"             value="true" />
     <param name="cube_side_length"      value="0.045" />
     <param name="axis_size"             value="0.1" />
     <param name="voxel_size"            value="0.002" />
