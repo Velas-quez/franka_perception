@@ -42,17 +42,90 @@ def camera_info_to_intrinsics(camera_info: CameraInfo) -> o3d.camera.PinholeCame
     )
 
 
+def _get_cv_bridge():
+    """Instantiate CvBridge lazily to keep non-RGBD workflows lightweight."""
+    try:
+        from cv_bridge import CvBridge
+    except ImportError as exc:  # pragma: no cover - depends on ROS env
+        raise ImportError("cv_bridge is required for RGB-D conversion") from exc
+    return CvBridge()
+
+
+def rgbd_msgs_to_numpy(
+    color_msg: Image,
+    depth_msg: Image,
+    *,
+    depth_scale: Optional[float] = None,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Convert ROS RGB-D messages to numpy arrays (RGB8 + depth in meters)."""
+    bridge = _get_cv_bridge()
+    color = bridge.imgmsg_to_cv2(color_msg, desired_encoding="rgb8")
+
+    depth_encoding = depth_msg.encoding.lower()
+    if depth_encoding in {"16uc1", "mono16"}:
+        depth_raw = bridge.imgmsg_to_cv2(depth_msg, desired_encoding="16UC1")
+        scale = 1000.0 if depth_scale is None or depth_scale <= 0.0 else float(depth_scale)
+        depth_m = depth_raw.astype(np.float32) / scale
+    elif depth_encoding in {"32fc1"}:
+        depth_m = bridge.imgmsg_to_cv2(depth_msg, desired_encoding="32FC1").astype(np.float32)
+        if depth_scale is not None and depth_scale > 0.0 and depth_scale != 1.0:
+            depth_m = depth_m / float(depth_scale)
+    else:
+        depth_raw = bridge.imgmsg_to_cv2(depth_msg).astype(np.float32)
+        scale = 1.0 if depth_scale is None or depth_scale <= 0.0 else float(depth_scale)
+        depth_m = depth_raw / scale
+
+    return color, depth_m
+
+
+def depth_to_xyz(
+    depth_m: np.ndarray,
+    camera_info: CameraInfo,
+    *,
+    mask: Optional[np.ndarray] = None,
+    depth_trunc: float = 3.0,
+    flip: bool = True,
+) -> np.ndarray:
+    """Project a depth map (meters) to Nx3 points using CameraInfo intrinsics."""
+    if depth_m.ndim != 2:
+        raise ValueError("depth_m must be a HxW array")
+
+    valid = np.isfinite(depth_m) & (depth_m > 0.0)
+    if depth_trunc > 0.0:
+        valid &= depth_m <= float(depth_trunc)
+
+    if mask is not None:
+        if mask.shape != depth_m.shape:
+            raise ValueError("mask shape must match depth shape")
+        valid &= mask.astype(bool)
+
+    rows, cols = np.nonzero(valid)
+    if rows.size == 0:
+        return np.empty((0, 3), dtype=np.float64)
+
+    z = depth_m[rows, cols].astype(np.float64)
+    fx = float(camera_info.K[0])
+    fy = float(camera_info.K[4])
+    cx = float(camera_info.K[2])
+    cy = float(camera_info.K[5])
+
+    x = (cols.astype(np.float64) - cx) * z / fx
+    y = (rows.astype(np.float64) - cy) * z / fy
+    points = np.column_stack((x, y, z))
+
+    if flip and points.size:
+        points[:, 1] *= -1.0
+        points[:, 2] *= -1.0
+
+    return points
+
+
 def _o3d_images_from_msgs(
     color_msg: Image,
     depth_msg: Image,
 ) -> Tuple[o3d.geometry.Image, o3d.geometry.Image, float]:
     """Convert ROS Image messages to Open3D images and infer depth scale."""
-    try:
-        from cv_bridge import CvBridge
-    except ImportError as exc:  # pragma: no cover - depends on ROS env
-        raise ImportError("cv_bridge is required for RGB-D conversion") from exc
-
-    bridge = CvBridge()
+    bridge = _get_cv_bridge()
 
     # Color: always convert to RGB8 for Open3D
     color = bridge.imgmsg_to_cv2(color_msg, desired_encoding="rgb8")

@@ -6,6 +6,7 @@ ROS pipeline for 3D perception with a ZED2, focused on detecting cubes and estim
 - ROS (catkin)
 - Python 3 + Open3D
 - ZED2 camera publishing to `/zed2/zed_node/point_cloud/cloud_registered`
+- For SAM pipeline (listener only): `torch`, `segment-anything`, `opencv-python`
 
 ## Layout
 - `src/franka_perception/src/franka_perception/` – pipeline: filtering, plane segmentation, clustering, cube fitting.
@@ -25,9 +26,24 @@ source devel/setup.bash
 roslaunch franka_perception listener.launch
 ```
 
+[Testing] Visualize using SAM RGB-D masks (listener only):
+```bash
+roslaunch franka_perception listener.launch \
+  pipeline_mode:=sam_rgbd \
+  sam_checkpoint_path:=/absolute/path/to/sam_vit_b_01ec64.pth
+```
+
 [Real] Continuous processing + pose/marker publication:
 ```bash
 roslaunch franka_perception dynamic_listener.launch
+```
+
+[Real] Continuous processing with SAM masking (no visualization windows):
+```bash
+roslaunch franka_perception dynamic_listener.launch \
+  pipeline_mode:=sam_rgbd \
+  use_rgbd:=true \
+  sam_checkpoint_path:=/absolute/path/to/sam_vit_b_01ec64.pth
 ```
 
 ## Pipeline stage control (listener)
@@ -41,6 +57,40 @@ Example:
 ```bash
 roslaunch franka_perception listener.launch stage:=cluster
 ```
+
+## SAM pipeline setup (listener.launch only)
+Install Python packages in the same environment used by ROS:
+```bash
+pip install opencv-python
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121   # or cpu wheel
+pip install git+https://github.com/facebookresearch/segment-anything.git
+```
+
+Download a SAM checkpoint (example `sam_vit_b_01ec64.pth`) and pass its path in launch:
+```bash
+roslaunch franka_perception listener.launch \
+  pipeline_mode:=sam_rgbd \
+  sam_model_type:=vit_b \
+  sam_device:=auto \
+  sam_checkpoint_path:=/absolute/path/to/sam_vit_b_01ec64.pth
+```
+
+When `pipeline_mode:=sam_rgbd`, the listener:
+- consumes RGB + depth + camera_info;
+- segments masks with SAM;
+- erodes masks and projects each mask to its own 3D cluster;
+- rejects table-like masks by area and plane-distance heuristics;
+- runs cube fitting on each mask cluster;
+- renders full cloud + masked cloud together in Open3D (different colors);
+- opens extra windows for RGB image and SAM masks.
+
+Useful SAM filtering parameters (listener.launch):
+- `sam_max_mask_area_ratio`: rejects huge masks (table/background).
+- `sam_near_plane_distance`: distance (m) to consider a point near table plane.
+- `sam_max_near_plane_ratio`: if too many points are near plane, reject mask.
+- `sam_min_mask_plane_height`: minimum p95 height (m) above plane to accept mask.
+- `sam_max_cluster_extent_multiplier`: rejects clusters much larger than cube edge.
+- `sam_max_cluster_volume_multiplier`: rejects clusters with excessive 3D volume.
 
 ## Key parameters (via launch/param server)
 - `cloud_topic`: PointCloud2 topic (default `/zed2/zed_node/point_cloud/cloud_registered`). -> needs to be changed to /group1/zed2/... on real robot

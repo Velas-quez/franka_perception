@@ -12,12 +12,21 @@ def build_geometries(result: CubeDetectionResult,
                      show_original_cloud: bool = False):
     """Create list of Open3D geometries for rendering."""
     geometries = []
-    pcd = result.original_cloud if show_original_cloud else result.filtered_cloud
-    # pcd = result.original_cloud
-    if paint_cloud:
-        pcd = o3d.geometry.PointCloud(pcd)
-        pcd.paint_uniform_color([0.6, 0.6, 0.6])
-    geometries.append(pcd)
+    has_masked = result.masked_cloud is not None and len(result.masked_cloud.points) > 0
+    if has_masked:
+        full_pcd = o3d.geometry.PointCloud(result.original_cloud)
+        masked_pcd = o3d.geometry.PointCloud(result.masked_cloud)
+        if paint_cloud:
+            full_pcd.paint_uniform_color([0.55, 0.55, 0.55])
+            masked_pcd.paint_uniform_color([0.95, 0.2, 0.2])
+        geometries.append(full_pcd)
+        geometries.append(masked_pcd)
+    else:
+        pcd = result.original_cloud if show_original_cloud else result.filtered_cloud
+        if paint_cloud:
+            pcd = o3d.geometry.PointCloud(pcd)
+            pcd.paint_uniform_color([0.6, 0.6, 0.6])
+        geometries.append(pcd)
 
     axis = o3d.geometry.TriangleMesh.create_coordinate_frame(
         size=float(axis_size),
