@@ -9,7 +9,7 @@ import numpy as np
 import open3d as o3d
 
 from .clustering import cluster_point_cloud
-from .cube_fitting import CubeEstimate, fit_cubes_in_cluster
+from .cube_fitting import CubeEstimate, fit_cubes_in_cluster, select_best_cubes
 from .filtering import filter_point_cloud
 
 
@@ -36,6 +36,7 @@ class CubeDetectionPipeline:
                  cluster_eps: float = 0.005,
                  cluster_min_points: int = 10,
                  max_cubes_per_cluster: int = 2,
+                 num_best_cubes: int = 2,
                  clearance: float = 0.015,
                  max_cluster_distance_from_plane_inliers: float = 0.08,
                  below_plane_tolerance: float = 0.002) -> None:
@@ -45,6 +46,7 @@ class CubeDetectionPipeline:
         self.cluster_eps = cluster_eps
         self.cluster_min_points = cluster_min_points
         self.max_cubes_per_cluster = max_cubes_per_cluster
+        self.num_best_cubes = num_best_cubes
         self.clearance = clearance
         self.max_cluster_distance_from_plane_inliers = max_cluster_distance_from_plane_inliers
         self.below_plane_tolerance = below_plane_tolerance
@@ -154,12 +156,16 @@ class CubeDetectionPipeline:
             failed_initial_meshes.extend(failed_inits)
             print(f"cube_fitting: {time.perf_counter() - tcluster:.3f}s")
 
+        # Select only the best num_best_cubes based on ICP fitness
+        selected_cubes = select_best_cubes(cubes, self.num_best_cubes)
+        print(f"Selected {len(selected_cubes)} best cubes out of {len(cubes)} total")
+
         return CubeDetectionResult(
             original_cloud=pcd,
             filtered_cloud=filtered,
             cluster_boxes=cluster_boxes,
             plane_obbs=plane_obbs,
-            cubes=cubes,
+            cubes=selected_cubes,
             failed_initial_meshes=failed_initial_meshes,
             plane_model=np.asarray(plane_model, dtype=float),
             plane_inlier_indices=np.asarray(inliers, dtype=int),

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Process point clouds continuously and publish cube poses/markers."""
 
+import copy
 import threading
 from typing import Optional, Iterable
 
@@ -17,7 +18,7 @@ from visualization_msgs.msg import MarkerArray
 from franka_perception.cloud_io import msg_to_xyz, has_points, rgbd_msgs_to_xyz
 from franka_perception.params import load_params
 from franka_perception.pipeline import CubeDetectionPipeline
-from franka_perception.publishers import publish_markers, publish_poses
+from franka_perception.publishers import publish_markers, publish_poses, publish_point_clouds
 from franka_perception.cube_fitting import CubeEstimate
 
 
@@ -33,6 +34,7 @@ class DynamicListenerNode:
             cluster_eps=self.params.cluster_eps,
             cluster_min_points=self.params.cluster_min_points,
             max_cubes_per_cluster=self.params.max_cubes_per_cluster,
+            num_best_cubes=self.params.num_best_cubes,
             clearance=self.params.clearance,
             max_cluster_distance_from_plane_inliers=self.params.max_cluster_distance_from_plane_inliers,
             below_plane_tolerance=self.params.below_plane_tolerance,
@@ -47,6 +49,7 @@ class DynamicListenerNode:
 
         self._pose_pub = rospy.Publisher("~cube_poses", PoseArray, queue_size=5)
         self._marker_pub = rospy.Publisher("~cube_markers", MarkerArray, queue_size=5)
+        self._cloud_pubs = {}  # Dictionary to store publishers for each cube's point cloud
 
         self._cloud_sub = None
         self._rgb_sub = None
@@ -133,6 +136,34 @@ class DynamicListenerNode:
             cubes_base, header_base = self._transform_cubes_to_target(result.cubes, header)
             publish_poses(cubes_base, header_base, self.params.cube_side_length, self._pose_pub)
             publish_markers(cubes_base, header_base, self.params.cube_side_length, self._marker_pub)
+            self._publish_cube_point_clouds(cubes_base, header_base)
+
+    def _publish_cube_point_clouds(self,
+                                   cubes: Iterable[CubeEstimate],
+                                   header: Optional[Header]):
+        """Publish point clouds sampled from each detected cube."""
+        cubes_list = list(cubes)
+        
+        # Create publishers for new cubes and clean up old ones
+        active_cube_indices = set(range(len(cubes_list)))
+        inactive_indices = set(self._cloud_pubs.keys()) - active_cube_indices
+        
+        for idx in inactive_indices:
+            if idx in self._cloud_pubs:
+                del self._cloud_pubs[idx]
+        
+        # Create publishers for new cubes if needed
+        for idx in active_cube_indices:
+            if idx not in self._cloud_pubs:
+                pub_name = f"~cube_cloud_{idx}"
+                self._cloud_pubs[idx] = rospy.Publisher(pub_name, PointCloud2, queue_size=5)
+                rospy.loginfo(f"Created publisher for {pub_name}")
+        
+        # Publish point clouds for each cube
+        for idx, cube in enumerate(cubes_list):
+            if idx in self._cloud_pubs:
+                publish_point_clouds([cube], header, num_samples=1500, 
+                                   publisher=self._cloud_pubs[idx])
 
     def _transform_cubes_to_target(self,
                                    cubes: Iterable[CubeEstimate],
@@ -157,10 +188,13 @@ class DynamicListenerNode:
         transformed = []
         for cube in cubes:
             new_T = T @ cube.transform
+            # Transform mesh to target frame
+            transformed_mesh = copy.deepcopy(cube.mesh)
+            transformed_mesh.transform(T)
             transformed.append(
                 CubeEstimate(
                     transform=new_T,
-                    mesh=cube.mesh,
+                    mesh=transformed_mesh,
                     initial_mesh=cube.initial_mesh,
                 )
             )

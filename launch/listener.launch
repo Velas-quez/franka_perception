@@ -9,22 +9,23 @@
         args="--stage $(arg stage)">
     <param name="show_original_cloud"  value="$(arg show_original_cloud)" />
     <param name="use_rgbd"              value="true" />
-    <param name="cloud_topic"           value="/zed2/zed_node/point_cloud/cloud_registered" />
-    <param name="rgb_topic"             value="/zed2/zed_node/rgb/image_rect_color" />
-    <param name="depth_topic"           value="/zed2/zed_node/depth/depth_registered" />
-    <param name="camera_info_topic"     value="/zed2/zed_node/rgb/camera_info" />
+    <param name="cloud_topic"           value="/group1/zed2i/zed_node/point_cloud/cloud_registered" />
+    <param name="rgb_topic"             value="/group1/zed2i/zed_node/rgb/image_rect_color" />
+    <param name="depth_topic"           value="/group1/zed2i/zed_node/depth/depth_registered" />
+    <param name="camera_info_topic"     value="/group1/zed2i/zed_node/rgb/camera_info" />
     <param name="depth_scale"           value="0.0" />
     <param name="depth_trunc"           value="3.0" />
     <param name="rgbd_flip"             value="true" />
     <param name="cube_side_length"      value="0.045" />
     <param name="axis_size"             value="0.1" />
-    <param name="voxel_size"            value="0.002" />
+    <param name="voxel_size"            value="0.0005" />
     <param name="cluster_eps"           value="0.005" />
     <param name="cluster_min_points"    value="10" />
     <param name="base_plane_distance"   value="0.01" />
     <param name="below_plane_tolerance" value="0.002" />
     <param name="max_cluster_distance_from_plane_inliers" value="0.08" />
     <param name="max_cubes_per_cluster" value="2" />
+    <param name="num_best_cubes"        value="2" />
     <param name="clearance"             value="0.015" />
   </node>
 </launch>

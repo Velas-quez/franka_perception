@@ -34,6 +34,7 @@ class SingleCloudNode:
             cluster_eps=self.params.cluster_eps,
             cluster_min_points=self.params.cluster_min_points,
             max_cubes_per_cluster=self.params.max_cubes_per_cluster,
+            num_best_cubes=self.params.num_best_cubes,
             clearance=self.params.clearance,
             max_cluster_distance_from_plane_inliers=self.params.max_cluster_distance_from_plane_inliers,
             below_plane_tolerance=self.params.below_plane_tolerance,

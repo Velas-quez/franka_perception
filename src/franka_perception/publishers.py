@@ -3,9 +3,12 @@
 
 from typing import Iterable, Optional
 
+import numpy as np
 import rospy
 import tf.transformations as tf_trans
 from geometry_msgs.msg import Pose, PoseArray
+from sensor_msgs import point_cloud2 as pc2
+from sensor_msgs.msg import PointCloud2
 from std_msgs.msg import Header
 from visualization_msgs.msg import Marker, MarkerArray
 
@@ -96,3 +99,35 @@ def publish_markers(cubes: Iterable[CubeEstimate],
         marker_array.markers.append(marker)
 
     publisher.publish(marker_array)
+
+
+def publish_point_clouds(cubes: Iterable[CubeEstimate],
+                         header: Optional[Header],
+                         num_samples: int = 1000,
+                         publisher=None) -> None:
+    """Publish point clouds sampled from each detected cube mesh in world reference frame."""
+    if publisher is None:
+        return
+
+    hdr = Header()
+    if header:
+        hdr.frame_id = header.frame_id
+        hdr.stamp = header.stamp
+    else:
+        hdr.frame_id = "world"
+        hdr.stamp = rospy.Time.now()
+
+    cubes_list = list(cubes)
+    # Only publish the first cube (when called with single cube from dynamic_listener)
+    if cubes_list:
+        cube = cubes_list[0]
+        # Sample points uniformly from the cube mesh (already in world frame)
+        sampled_pcd = cube.mesh.sample_points_uniformly(num_samples)
+        points = np.asarray(sampled_pcd.points, dtype=np.float32)
+
+        # Create PointCloud2 message
+        pc2_msg = pc2.create_cloud_xyz32(hdr, points)
+        
+        # Publish
+        publisher.publish(pc2_msg)
+

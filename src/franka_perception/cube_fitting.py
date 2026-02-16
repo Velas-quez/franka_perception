@@ -16,6 +16,7 @@ class CubeEstimate:
     transform: np.ndarray  # 4x4
     mesh: o3d.geometry.TriangleMesh
     initial_mesh: Optional[o3d.geometry.TriangleMesh] = None
+    icp_fitness: float = 0.0  # ICP fitness score (higher is better)
 
 
 def _orthonormalize(R: np.ndarray) -> np.ndarray:
@@ -115,7 +116,7 @@ def fit_cubes_in_cluster(cluster_pcd: o3d.geometry.PointCloud,
         )
         used_estimator = "point_to_point"
 
-        if icp_result.fitness <= 0.2 or icp_result.inlier_rmse > 0.004:
+        if icp_result.fitness <= 0.1 or icp_result.inlier_rmse > 0.004:
             print(f"ICP {used_estimator} coarse: fitness={icp_coarse.fitness:.3f}, rmse={icp_coarse.inlier_rmse:.4f}")
             print(f"ICP {used_estimator} poor: fitness={icp_result.fitness:.3f}, rmse={icp_result.inlier_rmse:.4f}")
             failed_initial_meshes.append(cube_mesh_init)
@@ -138,6 +139,7 @@ def fit_cubes_in_cluster(cluster_pcd: o3d.geometry.PointCloud,
                 transform=T_final,
                 mesh=cube_mesh_est,
                 initial_mesh=cube_mesh_init,
+                icp_fitness=icp_result.fitness,
             )
         )
 
@@ -149,3 +151,31 @@ def fit_cubes_in_cluster(cluster_pcd: o3d.geometry.PointCloud,
             break
 
     return estimates, obbs, failed_initial_meshes
+
+
+def select_best_cubes(estimates: List[CubeEstimate], num_best: int) -> List[CubeEstimate]:
+    """Select the top num_best cubes by ICP fitness score.
+    
+    Args:
+        estimates: List of CubeEstimate objects to filter
+        num_best: Number of best cubes to keep
+        
+    Returns:
+        List of the best cubes sorted by fitness (highest first)
+    """
+    if len(estimates) == 0:
+        return []
+    
+    if num_best <= 0:
+        return []
+    
+    # Sort by ICP fitness in descending order (higher fitness is better)
+    sorted_estimates = sorted(estimates, key=lambda c: c.icp_fitness, reverse=True)
+    
+    # Return only the top num_best
+    result = sorted_estimates[:min(num_best, len(sorted_estimates))]
+    
+    for i, cube in enumerate(result):
+        print(f"Selected cube {i+1}/{len(result)}: fitness={cube.icp_fitness:.4f}")
+    
+    return result

@@ -12,8 +12,8 @@ def build_geometries(result: CubeDetectionResult,
                      show_original_cloud: bool = False):
     """Create list of Open3D geometries for rendering."""
     geometries = []
-    # pcd = result.original_cloud if show_original_cloud else result.filtered_cloud
-    pcd = result.original_cloud
+    pcd = result.original_cloud if show_original_cloud else result.filtered_cloud
+    # pcd = result.original_cloud
     if paint_cloud:
         pcd = o3d.geometry.PointCloud(pcd)
         pcd.paint_uniform_color([0.6, 0.6, 0.6])
@@ -25,7 +25,7 @@ def build_geometries(result: CubeDetectionResult,
     )
     geometries.append(axis)
     geometries.extend(result.cluster_boxes)
-    geometries.extend(result.plane_obbs)
+    # geometries.extend(result.plane_obbs)
     # geometries.extend(result.failed_initial_meshes)
     # geometries.extend([c.initial_mesh for c in result.cubes if c.initial_mesh is not None])
     geometries.extend([c.mesh for c in result.cubes])

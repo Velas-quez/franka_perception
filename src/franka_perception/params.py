@@ -26,6 +26,7 @@ class PerceptionParams:
     below_plane_tolerance: float
     max_cluster_distance_from_plane_inliers: float
     max_cubes_per_cluster: int
+    num_best_cubes: int
     clearance: float
 
 
@@ -54,5 +55,6 @@ def load_params(ns: str = "~") -> PerceptionParams:
         max_cluster_distance_from_plane_inliers=float(
             _p("max_cluster_distance_from_plane_inliers", 0.08)),
         max_cubes_per_cluster=int(_p("max_cubes_per_cluster", 2)),
+        num_best_cubes=int(_p("num_best_cubes", 2)),
         clearance=float(_p("clearance", 0.015)),
     )
