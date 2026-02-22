@@ -6,4 +6,10 @@ setup(
     packages=find_packages("src"),
     package_dir={"": "src"},
     install_requires=[],
+    extras_require={
+        "sam": [
+            "torch",
+            "segment-anything",
+        ],
+    },
 )

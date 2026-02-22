@@ -6,7 +6,36 @@ ROS pipeline for 3D perception with a ZED2, focused on detecting cubes and estim
 - ROS (catkin)
 - Python 3 + Open3D
 - ZED2 camera publishing to `/zed2/zed_node/point_cloud/cloud_registered`
-- For SAM pipeline (listener only): `torch`, `segment-anything`, `opencv-python`
+- For SAM pipeline (listener only): `torch`, `segment-anything`
+
+## Dependency setup (mounted repo inside container)
+Run dependency installation inside the container (where ROS nodes run):
+
+```bash
+cd /opt/ros_ws
+source /opt/ros/$ROS_DISTRO/setup.bash
+
+rosdep update
+rosdep install --from-paths src --ignore-src -r -y
+
+python3 -m pip install --upgrade pip
+python3 -m pip install -e src/franka_perception
+# with SAM extras:
+# python3 -m pip install -e "src/franka_perception[sam]"
+```
+
+When dependencies change in `package.xml` or `setup.py`, update with:
+
+```bash
+cd /opt/ros_ws
+source /opt/ros/$ROS_DISTRO/setup.bash
+rosdep install --from-paths src --ignore-src -r -y
+python3 -m pip install -e src/franka_perception
+# or with SAM extras:
+# python3 -m pip install -e "src/franka_perception[sam]"
+catkin_make
+source devel/setup.bash
+```
 
 ## Layout
 - `src/franka_perception/src/franka_perception/` – pipeline: filtering, plane segmentation, clustering, cube fitting.
@@ -59,11 +88,9 @@ roslaunch franka_perception listener.launch stage:=cluster
 ```
 
 ## SAM pipeline setup (listener.launch only)
-Install Python packages in the same environment used by ROS:
+Install SAM extras in the same environment used by ROS:
 ```bash
-pip install opencv-python
-pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121   # or cpu wheel
-pip install git+https://github.com/facebookresearch/segment-anything.git
+python3 -m pip install -e "src/franka_perception[sam]"
 ```
 
 Download a SAM checkpoint (example `sam_vit_b_01ec64.pth`) and pass its path in launch:
