@@ -16,10 +16,16 @@
     <param name="show_original_cloud"  value="$(arg show_original_cloud)" />
     <param name="pipeline_mode"        value="sam_rgbd" />
     <param name="use_rgbd"              value="true" />
+
     <param name="cloud_topic"           value="/zed2/zed_node/point_cloud/cloud_registered" />
     <param name="rgb_topic"             value="/zed2/zed_node/rgb/image_rect_color" />
     <param name="depth_topic"           value="/zed2/zed_node/depth/depth_registered" />
     <param name="camera_info_topic"     value="/zed2/zed_node/rgb/camera_info" />
+    <!-- <param name="cloud_topic"           value="/zed2/zed_node/point_cloud/cloud_registered" />
+    <param name="rgb_topic"             value="/zed2/zed_node/left/image_rect_color" />
+    <param name="depth_topic"           value="/zed2/zed_node/depth/depth_registered" />
+    <param name="camera_info_topic"     value="/zed2/zed_node/left/camera_info" /> -->
+
     <param name="depth_scale"           value="0.0" />
     <param name="depth_trunc"           value="3.0" />
     <param name="rgbd_flip"             value="true" />
