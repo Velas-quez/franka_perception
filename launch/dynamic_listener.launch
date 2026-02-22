@@ -1,8 +1,8 @@
 <launch>
   <arg name="use_rgbd" default="false" doc="Use RGB-D topics instead of PointCloud2" />
   <arg name="pipeline_mode" default="classic" doc="classic|sam_rgbd" />
-  <arg name="sam_checkpoint_path" default="" doc="Absolute path to SAM checkpoint (.pth)" />
-  <arg name="sam_model_type" default="vit_b" doc="SAM model type: vit_b|vit_l|vit_h" />
+  <arg name="sam_model_id" default="facebook/sam3.1-hiera-large" doc="SAM3 model id (Hugging Face)" />
+  <arg name="sam_prompt" default="cube" doc="Text prompt for SAM3, e.g. cube or red cube" />
   <arg name="sam_device" default="auto" doc="auto|cpu|cuda" />
 
   <node pkg="franka_perception" type="dynamic_listener_node.py" name="listener" output="screen">
@@ -28,13 +28,10 @@
     <param name="clearance"             value="0.015" />
 
     <!-- SAM-only params (used when pipeline_mode=sam_rgbd) -->
-    <param name="sam_checkpoint_path"         value="$(arg sam_checkpoint_path)" />
-    <param name="sam_model_type"              value="$(arg sam_model_type)" />
+    <param name="sam_model_id"                value="$(arg sam_model_id)" />
     <param name="sam_device"                  value="$(arg sam_device)" />
-    <param name="sam_points_per_side"         value="32" />
-    <param name="sam_pred_iou_thresh"         value="0.86" />
-    <param name="sam_stability_score_thresh"  value="0.92" />
-    <param name="sam_min_mask_region_area"    value="150" />
+    <param name="sam_prompt"                  value="$(arg sam_prompt)" />
+    <param name="sam_score_threshold"         value="0.0" />
     <param name="sam_max_masks"               value="8" />
     <param name="sam_min_mask_pixels"         value="1200" />
     <param name="sam_min_depth_pixels"        value="600" />

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""SAM helpers for RGB mask generation."""
+"""SAM3 helpers for prompt-based RGB mask generation."""
 
 from dataclasses import dataclass
 from typing import List
@@ -15,78 +15,111 @@ class SamMask:
     score: float
 
 
-class SamAutomaticSegmenter:
-    """Wrapper around Segment Anything automatic mask generator."""
+class Sam3PromptSegmenter:
+    """Wrapper around SAM3 prompt segmentation."""
 
     def __init__(self,
-                 checkpoint_path: str,
-                 model_type: str = "vit_b",
+                 model_id: str = "facebook/sam3.1-hiera-large",
                  device: str = "auto",
-                 points_per_side: int = 32,
-                 pred_iou_thresh: float = 0.86,
-                 stability_score_thresh: float = 0.92,
-                 min_mask_region_area: int = 150) -> None:
-        self.checkpoint_path = checkpoint_path
-        self.model_type = model_type
+                 score_threshold: float = 0.0) -> None:
+        self.model_id = model_id
         self.device = device
-        self.points_per_side = points_per_side
-        self.pred_iou_thresh = pred_iou_thresh
-        self.stability_score_thresh = stability_score_thresh
-        self.min_mask_region_area = min_mask_region_area
-        self._generator = None
+        self.score_threshold = score_threshold
+        self._processor = None
+        self._model = None
+        self._torch = None
+        self._runtime_device = None
 
-    def _build_generator(self):
-        if self._generator is not None:
-            return self._generator
-        if not self.checkpoint_path:
-            raise ValueError(
-                "Missing SAM checkpoint. Set ~sam_checkpoint_path to a valid .pth file.")
+    def _load(self) -> None:
+        if self._processor is not None and self._model is not None:
+            return
 
         try:
+            from PIL import Image
             import torch
-            from segment_anything import SamAutomaticMaskGenerator, sam_model_registry
+            from transformers import Sam3Model, Sam3Processor
         except ImportError as exc:
             raise ImportError(
-                "SAM dependencies missing. Install torch and segment-anything.") from exc
-
-        if self.model_type not in sam_model_registry:
-            valid = ", ".join(sorted(sam_model_registry.keys()))
-            raise ValueError(f"Invalid sam_model_type '{self.model_type}'. Valid: {valid}")
+                "SAM3 dependencies missing. Install torch, transformers and pillow.") from exc
 
         if self.device == "auto":
-            device = "cuda" if torch.cuda.is_available() else "cpu"
+            runtime_device = "cuda" if torch.cuda.is_available() else "cpu"
         else:
-            device = self.device
+            runtime_device = self.device
 
-        sam = sam_model_registry[self.model_type](checkpoint=self.checkpoint_path)
-        sam.to(device=device)
-        self._generator = SamAutomaticMaskGenerator(
-            sam,
-            points_per_side=int(self.points_per_side),
-            pred_iou_thresh=float(self.pred_iou_thresh),
-            stability_score_thresh=float(self.stability_score_thresh),
-            min_mask_region_area=int(self.min_mask_region_area),
-        )
-        return self._generator
+        model_dtype = torch.float16 if runtime_device == "cuda" else torch.float32
+        self._processor = Sam3Processor.from_pretrained(self.model_id)
+        self._model = Sam3Model.from_pretrained(self.model_id, torch_dtype=model_dtype)
+        self._model.to(runtime_device)
+        self._model.eval()
+        self._torch = torch
+        self._runtime_device = runtime_device
+        self._pil_image_cls = Image
 
     def generate(self,
                  rgb_image: np.ndarray,
                  *,
+                 prompt: str = "cube",
                  max_masks: int = 8,
                  min_mask_pixels: int = 1200) -> List[SamMask]:
-        """Generate and rank SAM masks."""
-        generator = self._build_generator()
-        raw_masks = generator.generate(rgb_image)
+        """Generate and rank SAM3 masks from text prompt(s)."""
+        self._load()
+        assert self._processor is not None
+        assert self._model is not None
+        assert self._torch is not None
+        assert self._runtime_device is not None
+
+        prompts = [p.strip() for p in str(prompt).split(",") if p.strip()]
+        if not prompts:
+            prompts = ["cube"]
+
+        image = self._pil_image_cls.fromarray(rgb_image)
+        image_inputs = self._processor(images=image, return_tensors="pt")
+        original_sizes = image_inputs["original_sizes"].cpu()
+        reshaped_sizes = image_inputs["reshaped_input_sizes"].cpu()
+        pixel_values = image_inputs["pixel_values"].to(self._runtime_device)
+        with self._torch.inference_mode():
+            image_embeddings = self._model.get_image_embeddings(pixel_values)
 
         masks: List[SamMask] = []
-        for entry in raw_masks:
-            seg = np.asarray(entry.get("segmentation"), dtype=bool)
-            area = int(seg.sum())
-            if area < int(min_mask_pixels):
+        for text_prompt in prompts:
+            self._processor.set_image_embeddings(image_embeddings)
+            self._processor.set_text_prompt([text_prompt])
+            prompt_inputs = self._processor()
+            prompt_inputs = {
+                key: value.to(self._runtime_device) if hasattr(value, "to") else value
+                for key, value in prompt_inputs.items()
+            }
+            with self._torch.inference_mode():
+                outputs = self._model(**prompt_inputs, multimask_output=False)
+
+            pred_masks = outputs.pred_masks.detach().cpu()
+            iou_scores = outputs.iou_scores.detach().cpu().numpy()
+            processed = self._processor.post_process_masks(
+                pred_masks,
+                original_sizes,
+                reshaped_sizes,
+            )
+            if not processed:
                 continue
-            score = float(entry.get("predicted_iou", 0.0)) * float(
-                entry.get("stability_score", 0.0))
-            masks.append(SamMask(segmentation=seg, area=area, score=score))
+
+            raw = processed[0]
+            if hasattr(raw, "numpy"):
+                raw = raw.numpy()
+            raw = np.asarray(raw)
+            if raw.ndim == 2:
+                raw = raw[None, ...]
+
+            score_values = np.asarray(iou_scores).reshape(-1)
+            for idx, mask_arr in enumerate(raw):
+                seg = np.asarray(mask_arr > 0, dtype=bool)
+                area = int(seg.sum())
+                if area < int(min_mask_pixels):
+                    continue
+                score = float(score_values[idx]) if idx < score_values.size else 0.0
+                if score < float(self.score_threshold):
+                    continue
+                masks.append(SamMask(segmentation=seg, area=area, score=score))
 
         masks.sort(key=lambda m: m.score, reverse=True)
         if max_masks > 0:

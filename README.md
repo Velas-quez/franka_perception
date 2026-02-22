@@ -6,7 +6,8 @@ ROS pipeline for 3D perception with a ZED2, focused on detecting cubes and estim
 - ROS (catkin)
 - Python 3 + Open3D
 - ZED2 camera publishing to `/zed2/zed_node/point_cloud/cloud_registered`
-- For SAM pipeline (listener only): `torch`, `segment-anything`
+- For SAM3 pipeline: `torch`, `transformers`, `pillow`, `huggingface_hub`
+- SAM3 official requirement: Python `>=3.10` (the current container is Python 3.8)
 
 ## Dependency setup (mounted repo inside container)
 Run dependency installation inside the container (where ROS nodes run):
@@ -59,7 +60,8 @@ roslaunch franka_perception listener.launch
 ```bash
 roslaunch franka_perception listener.launch \
   pipeline_mode:=sam_rgbd \
-  sam_checkpoint_path:=/absolute/path/to/sam_vit_b_01ec64.pth
+  sam_model_id:=facebook/sam3.1-hiera-large \
+  sam_prompt:=cube
 ```
 
 [Real] Continuous processing + pose/marker publication:
@@ -72,7 +74,8 @@ roslaunch franka_perception dynamic_listener.launch
 roslaunch franka_perception dynamic_listener.launch \
   pipeline_mode:=sam_rgbd \
   use_rgbd:=true \
-  sam_checkpoint_path:=/absolute/path/to/sam_vit_b_01ec64.pth
+  sam_model_id:=facebook/sam3.1-hiera-large \
+  sam_prompt:=cube
 ```
 
 ## Pipeline stage control (listener)
@@ -87,31 +90,35 @@ Example:
 roslaunch franka_perception listener.launch stage:=cluster
 ```
 
-## SAM pipeline setup (listener.launch only)
-Install SAM extras in the same environment used by ROS:
+## SAM3 pipeline setup
+Install SAM3 extras in the same environment used by ROS:
 ```bash
 python3 -m pip install -e "src/franka_perception[sam]"
 ```
 
-Download a SAM checkpoint (example `sam_vit_b_01ec64.pth`) and pass its path in launch:
+Run with prompt-driven SAM3 segmentation:
 ```bash
 roslaunch franka_perception listener.launch \
   pipeline_mode:=sam_rgbd \
-  sam_model_type:=vit_b \
+  sam_model_id:=facebook/sam3.1-hiera-large \
+  sam_prompt:=cube \
   sam_device:=auto \
-  sam_checkpoint_path:=/absolute/path/to/sam_vit_b_01ec64.pth
+  sam_score_threshold:=0.0
 ```
 
 When `pipeline_mode:=sam_rgbd`, the listener:
 - consumes RGB + depth + camera_info;
-- segments masks with SAM;
+- segments masks with SAM3 text prompt;
 - erodes masks and projects each mask to its own 3D cluster;
 - rejects table-like masks by area and plane-distance heuristics;
 - runs cube fitting on each mask cluster;
 - renders full cloud + masked cloud together in Open3D (different colors);
 - opens extra windows for RGB image and SAM masks.
 
-Useful SAM filtering parameters (listener.launch):
+Useful SAM3 parameters (listener.launch):
+- `sam_prompt`: prompt text. You can pass a CSV list, e.g. `cube, red cube`.
+- `sam_model_id`: model from Hugging Face (default `facebook/sam3.1-hiera-large`).
+- `sam_score_threshold`: minimum SAM3 IoU confidence to keep mask.
 - `sam_max_mask_area_ratio`: rejects huge masks (table/background).
 - `sam_near_plane_distance`: distance (m) to consider a point near table plane.
 - `sam_max_near_plane_ratio`: if too many points are near plane, reject mask.

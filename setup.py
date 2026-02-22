@@ -9,7 +9,9 @@ setup(
     extras_require={
         "sam": [
             "torch",
-            "segment-anything",
+            "transformers",
+            "pillow",
+            "huggingface_hub",
         ],
     },
 )

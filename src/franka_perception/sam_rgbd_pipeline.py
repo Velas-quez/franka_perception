@@ -9,7 +9,7 @@ import open3d as o3d
 from .cloud_io import depth_to_xyz, rgbd_msgs_to_numpy
 from .cube_fitting import CubeEstimate, fit_cubes_in_cluster, select_best_cubes
 from .pipeline import CubeDetectionResult
-from .sam_masking import SamAutomaticSegmenter, erode_mask, select_mask_candidates
+from .sam_masking import Sam3PromptSegmenter, erode_mask, select_mask_candidates
 from .sam_visualization import build_mask_overlay
 
 
@@ -22,13 +22,10 @@ class SamRgbdCubeDetectionPipeline:
                  max_cubes_per_cluster: int = 2,
                  num_best_cubes: int = 2,
                  clearance: float = 0.015,
-                 sam_checkpoint_path: str = "",
-                 sam_model_type: str = "vit_b",
+                 sam_model_id: str = "facebook/sam3.1-hiera-large",
                  sam_device: str = "auto",
-                 sam_points_per_side: int = 32,
-                 sam_pred_iou_thresh: float = 0.86,
-                 sam_stability_score_thresh: float = 0.92,
-                 sam_min_mask_region_area: int = 150,
+                 sam_prompt: str = "cube",
+                 sam_score_threshold: float = 0.0,
                  sam_max_masks: int = 8,
                  sam_min_mask_pixels: int = 1200,
                  sam_min_depth_pixels: int = 600,
@@ -47,6 +44,7 @@ class SamRgbdCubeDetectionPipeline:
         self.max_cubes_per_cluster = max_cubes_per_cluster
         self.num_best_cubes = num_best_cubes
         self.clearance = clearance
+        self.sam_prompt = sam_prompt
         self.sam_max_masks = sam_max_masks
         self.sam_min_mask_pixels = sam_min_mask_pixels
         self.sam_min_depth_pixels = sam_min_depth_pixels
@@ -60,14 +58,10 @@ class SamRgbdCubeDetectionPipeline:
         self.sam_min_mask_plane_height = sam_min_mask_plane_height
         self.sam_max_cluster_extent_multiplier = sam_max_cluster_extent_multiplier
         self.sam_max_cluster_volume_multiplier = sam_max_cluster_volume_multiplier
-        self.segmenter = SamAutomaticSegmenter(
-            checkpoint_path=sam_checkpoint_path,
-            model_type=sam_model_type,
+        self.segmenter = Sam3PromptSegmenter(
+            model_id=sam_model_id,
             device=sam_device,
-            points_per_side=sam_points_per_side,
-            pred_iou_thresh=sam_pred_iou_thresh,
-            stability_score_thresh=sam_stability_score_thresh,
-            min_mask_region_area=sam_min_mask_region_area,
+            score_threshold=sam_score_threshold,
         )
 
     @staticmethod
@@ -143,6 +137,7 @@ class SamRgbdCubeDetectionPipeline:
 
         sam_masks = self.segmenter.generate(
             rgb_image,
+            prompt=self.sam_prompt,
             max_masks=self.sam_max_masks,
             min_mask_pixels=self.sam_min_mask_pixels,
         )
