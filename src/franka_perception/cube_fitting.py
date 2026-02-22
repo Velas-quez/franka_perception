@@ -116,11 +116,11 @@ def fit_cubes_in_cluster(cluster_pcd: o3d.geometry.PointCloud,
         )
         used_estimator = "point_to_point"
 
-        if icp_result.fitness <= 0.1 or icp_result.inlier_rmse > 0.004:
-            print(f"ICP {used_estimator} coarse: fitness={icp_coarse.fitness:.3f}, rmse={icp_coarse.inlier_rmse:.4f}")
-            print(f"ICP {used_estimator} poor: fitness={icp_result.fitness:.3f}, rmse={icp_result.inlier_rmse:.4f}")
-            failed_initial_meshes.append(cube_mesh_init)
-            break
+        # if icp_result.fitness <= 0.1 or icp_result.inlier_rmse > 0.004:
+        #     print(f"ICP {used_estimator} coarse: fitness={icp_coarse.fitness:.3f}, rmse={icp_coarse.inlier_rmse:.4f}")
+        #     print(f"ICP {used_estimator} poor: fitness={icp_result.fitness:.3f}, rmse={icp_result.inlier_rmse:.4f}")
+        #     failed_initial_meshes.append(cube_mesh_init)
+        #     break
 
         T_final = icp_result.transformation.copy()
         T_final[:3, :3] = _orthonormalize(T_final[:3, :3])

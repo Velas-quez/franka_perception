@@ -17,6 +17,7 @@ class PerceptionParams:
     depth_scale: float
     depth_trunc: float
     rgbd_flip: bool
+    sam_mode: str
     sam_checkpoint_path: str
     sam_model_type: str
     sam_device: str
@@ -24,6 +25,11 @@ class PerceptionParams:
     sam_pred_iou_thresh: float
     sam_stability_score_thresh: float
     sam_min_mask_region_area: int
+    sam_prompt_text: str
+    sam_prompt_box_threshold: float
+    sam_prompt_text_threshold: float
+    sam_grounding_model_id: str
+    sam_segmentor_model_id: str
     sam_max_masks: int
     sam_min_mask_pixels: int
     sam_min_depth_pixels: int
@@ -68,6 +74,7 @@ def load_params(ns: str = "~") -> PerceptionParams:
         depth_scale=float(_p("depth_scale", 0.0)),
         depth_trunc=float(_p("depth_trunc", 3.0)),
         rgbd_flip=bool(_p("rgbd_flip", True)),
+        sam_mode=_p("sam_mode", "sam3"),
         sam_checkpoint_path=_p("sam_checkpoint_path", ""),
         sam_model_type=_p("sam_model_type", "vit_b"),
         sam_device=_p("sam_device", "auto"),
@@ -75,6 +82,11 @@ def load_params(ns: str = "~") -> PerceptionParams:
         sam_pred_iou_thresh=float(_p("sam_pred_iou_thresh", 0.86)),
         sam_stability_score_thresh=float(_p("sam_stability_score_thresh", 0.92)),
         sam_min_mask_region_area=int(_p("sam_min_mask_region_area", 150)),
+        sam_prompt_text=_p("sam_prompt_text", "cube."),
+        sam_prompt_box_threshold=float(_p("sam_prompt_box_threshold", 0.25)),
+        sam_prompt_text_threshold=float(_p("sam_prompt_text_threshold", 0.25)),
+        sam_grounding_model_id=_p("sam_grounding_model_id", "IDEA-Research/grounding-dino-base"),
+        sam_segmentor_model_id=_p("sam_segmentor_model_id", "facebook/sam2-hiera-large"),
         sam_max_masks=int(_p("sam_max_masks", 8)),
         sam_min_mask_pixels=int(_p("sam_min_mask_pixels", 1200)),
         sam_min_depth_pixels=int(_p("sam_min_depth_pixels", 600)),

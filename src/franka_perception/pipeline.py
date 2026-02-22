@@ -27,6 +27,7 @@ class CubeDetectionResult:
     plane_inlier_cloud: Optional[o3d.geometry.PointCloud] = None
     sam_rgb_image: Optional[np.ndarray] = None
     sam_masks: Optional[List[np.ndarray]] = None
+    sam_dino_boxes: Optional[np.ndarray] = None
     sam_overlay: Optional[np.ndarray] = None
 
 

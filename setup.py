@@ -10,6 +10,8 @@ setup(
         "sam": [
             "torch",
             "segment-anything",
+            "transformers>=4.45.0",
+            "pillow",
         ],
     },
 )

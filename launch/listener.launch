@@ -2,9 +2,11 @@
   <arg name="stage" default="all" doc="Pipeline stage to render: none|filter|cluster|all" />
   <arg name="pipeline_mode" default="classic" doc="classic|sam_rgbd" />
   <arg name="show_original_cloud" default="false" doc="Render original cloud instead of filtered cloud" />
+  <arg name="sam_mode" default="sam3" doc="sam3 (prompted) | sam1 (automatic)" />
   <arg name="sam_checkpoint_path" default="" doc="Absolute path to SAM checkpoint (.pth)" />
   <arg name="sam_model_type" default="vit_b" doc="SAM model type: vit_b|vit_l|vit_h" />
   <arg name="sam_device" default="auto" doc="auto|cpu|cuda" />
+  <arg name="sam_prompt_text" default="cube" doc="Text prompt for cube detection in SAM3 mode" />
 
   <node pkg="franka_perception"
         type="listener_node.py"
@@ -12,7 +14,7 @@
         output="screen"
         args="--stage $(arg stage)">
     <param name="show_original_cloud"  value="$(arg show_original_cloud)" />
-    <param name="pipeline_mode"        value="$(arg pipeline_mode)" />
+    <param name="pipeline_mode"        value="sam_rgbd" />
     <param name="use_rgbd"              value="true" />
     <param name="cloud_topic"           value="/zed2/zed_node/point_cloud/cloud_registered" />
     <param name="rgb_topic"             value="/zed2/zed_node/rgb/image_rect_color" />
@@ -34,14 +36,20 @@
     <param name="clearance"             value="0.015" />
 
     <!-- SAM-only params (used when pipeline_mode=sam_rgbd) -->
-    <param name="sam_checkpoint_path"         value="/opt/ros_ws/models/sam_vit_b_01ec64.pth" />
+    <param name="sam_mode"                    value="sam3" />
+    <param name="sam_checkpoint_path"         value="$(arg sam_checkpoint_path)" />
     <param name="sam_model_type"              value="$(arg sam_model_type)" />
     <param name="sam_device"                  value="$(arg sam_device)" />
     <param name="sam_points_per_side"         value="32" />
     <param name="sam_pred_iou_thresh"         value="0.86" />
     <param name="sam_stability_score_thresh"  value="0.92" />
     <param name="sam_min_mask_region_area"    value="150" />
-    <param name="sam_max_masks"               value="8" />
+    <param name="sam_prompt_text"             value="$(arg sam_prompt_text)" />
+    <param name="sam_prompt_box_threshold"    value="0.25" />
+    <param name="sam_prompt_text_threshold"   value="0.25" />
+    <param name="sam_grounding_model_id"      value="IDEA-Research/grounding-dino-base" />
+    <param name="sam_segmentor_model_id"      value="facebook/sam2-hiera-large" />
+    <param name="sam_max_masks"               value="10000" />
     <param name="sam_min_mask_pixels"         value="1200" />
     <param name="sam_min_depth_pixels"        value="600" />
     <param name="sam_mask_erosion_kernel"     value="3" />

@@ -15,7 +15,7 @@ from franka_perception.cloud_io import msg_to_xyz, has_points, rgbd_msgs_to_xyz
 from franka_perception.params import load_params
 from franka_perception.pipeline import CubeDetectionPipeline
 from franka_perception.sam_rgbd_pipeline import SamRgbdCubeDetectionPipeline
-from franka_perception.sam_visualization import show_rgb_and_masks
+from franka_perception.sam_visualization import show_dino_and_sam
 from franka_perception.visualization import draw
 
 
@@ -44,6 +44,7 @@ class SingleCloudNode:
                 max_cubes_per_cluster=self.params.max_cubes_per_cluster,
                 num_best_cubes=self.params.num_best_cubes,
                 clearance=self.params.clearance,
+                sam_mode=self.params.sam_mode,
                 sam_checkpoint_path=self.params.sam_checkpoint_path,
                 sam_model_type=self.params.sam_model_type,
                 sam_device=self.params.sam_device,
@@ -51,6 +52,11 @@ class SingleCloudNode:
                 sam_pred_iou_thresh=self.params.sam_pred_iou_thresh,
                 sam_stability_score_thresh=self.params.sam_stability_score_thresh,
                 sam_min_mask_region_area=self.params.sam_min_mask_region_area,
+                sam_prompt_text=self.params.sam_prompt_text,
+                sam_prompt_box_threshold=self.params.sam_prompt_box_threshold,
+                sam_prompt_text_threshold=self.params.sam_prompt_text_threshold,
+                sam_grounding_model_id=self.params.sam_grounding_model_id,
+                sam_segmentor_model_id=self.params.sam_segmentor_model_id,
                 sam_max_masks=self.params.sam_max_masks,
                 sam_min_mask_pixels=self.params.sam_min_mask_pixels,
                 sam_min_depth_pixels=self.params.sam_min_depth_pixels,
@@ -212,8 +218,25 @@ class SingleCloudNode:
                 stop_after=self.stage,
             )
             if self.params.sam_show_windows and result.sam_rgb_image is not None:
-                overlay = show_rgb_and_masks(
+                rgb_arr = np.asarray(result.sam_rgb_image)
+                finite = np.isfinite(rgb_arr)
+                if np.any(finite):
+                    rgb_min = float(np.min(rgb_arr[finite]))
+                    rgb_max = float(np.max(rgb_arr[finite]))
+                else:
+                    rgb_min = float("nan")
+                    rgb_max = float("nan")
+                rospy.loginfo(
+                    "SAM preview image: encoding=%s shape=%s dtype=%s min=%.3f max=%.3f",
+                    getattr(rgb_msg, "encoding", "unknown"),
+                    tuple(rgb_arr.shape),
+                    rgb_arr.dtype,
+                    rgb_min,
+                    rgb_max,
+                )
+                overlay = show_dino_and_sam(
                     result.sam_rgb_image,
+                    result.sam_dino_boxes,
                     result.sam_masks or [],
                     wait_ms=self.params.sam_window_wait_ms,
                     title_prefix="SAM",

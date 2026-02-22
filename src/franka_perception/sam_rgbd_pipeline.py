@@ -9,7 +9,7 @@ import open3d as o3d
 from .cloud_io import depth_to_xyz, rgbd_msgs_to_numpy
 from .cube_fitting import CubeEstimate, fit_cubes_in_cluster, select_best_cubes
 from .pipeline import CubeDetectionResult
-from .sam_masking import SamAutomaticSegmenter, erode_mask, select_mask_candidates
+from .sam_masking import SamSegmenter, erode_mask, select_mask_candidates
 from .sam_visualization import build_mask_overlay
 
 
@@ -22,6 +22,7 @@ class SamRgbdCubeDetectionPipeline:
                  max_cubes_per_cluster: int = 2,
                  num_best_cubes: int = 2,
                  clearance: float = 0.015,
+                 sam_mode: str = "sam3",
                  sam_checkpoint_path: str = "",
                  sam_model_type: str = "vit_b",
                  sam_device: str = "auto",
@@ -29,6 +30,11 @@ class SamRgbdCubeDetectionPipeline:
                  sam_pred_iou_thresh: float = 0.86,
                  sam_stability_score_thresh: float = 0.92,
                  sam_min_mask_region_area: int = 150,
+                 sam_prompt_text: str = "cube.",
+                 sam_prompt_box_threshold: float = 0.25,
+                 sam_prompt_text_threshold: float = 0.25,
+                 sam_grounding_model_id: str = "IDEA-Research/grounding-dino-base",
+                 sam_segmentor_model_id: str = "facebook/sam2-hiera-large",
                  sam_max_masks: int = 8,
                  sam_min_mask_pixels: int = 1200,
                  sam_min_depth_pixels: int = 600,
@@ -60,7 +66,8 @@ class SamRgbdCubeDetectionPipeline:
         self.sam_min_mask_plane_height = sam_min_mask_plane_height
         self.sam_max_cluster_extent_multiplier = sam_max_cluster_extent_multiplier
         self.sam_max_cluster_volume_multiplier = sam_max_cluster_volume_multiplier
-        self.segmenter = SamAutomaticSegmenter(
+        self.segmenter = SamSegmenter(
+            mode=sam_mode,
             checkpoint_path=sam_checkpoint_path,
             model_type=sam_model_type,
             device=sam_device,
@@ -68,6 +75,11 @@ class SamRgbdCubeDetectionPipeline:
             pred_iou_thresh=sam_pred_iou_thresh,
             stability_score_thresh=sam_stability_score_thresh,
             min_mask_region_area=sam_min_mask_region_area,
+            prompt_text=sam_prompt_text,
+            prompt_box_threshold=sam_prompt_box_threshold,
+            prompt_text_threshold=sam_prompt_text_threshold,
+            grounding_model_id=sam_grounding_model_id,
+            sam_model_id=sam_segmentor_model_id,
         )
 
     @staticmethod
@@ -126,6 +138,7 @@ class SamRgbdCubeDetectionPipeline:
                 plane_inlier_cloud=None,
                 sam_rgb_image=rgb_image,
                 sam_masks=[],
+                sam_dino_boxes=np.zeros((0, 4), dtype=np.float32),
                 sam_overlay=None,
             )
 
@@ -146,6 +159,7 @@ class SamRgbdCubeDetectionPipeline:
             max_masks=self.sam_max_masks,
             min_mask_pixels=self.sam_min_mask_pixels,
         )
+        dino_boxes = self.segmenter.get_last_boxes()
         selected_masks = select_mask_candidates(
             sam_masks,
             depth_m,
@@ -157,12 +171,14 @@ class SamRgbdCubeDetectionPipeline:
         clusters: List[o3d.geometry.PointCloud] = []
         cluster_boxes = []
         eroded_masks: List[np.ndarray] = []
+        viz_masks: List[np.ndarray] = []
         for mask in selected_masks:
             clean_mask = erode_mask(
                 mask.segmentation,
                 kernel_size=self.sam_mask_erosion_kernel,
                 iterations=self.sam_mask_erosion_iterations,
             )
+            viz_masks.append(clean_mask)
             area_ratio = float(clean_mask.sum()) / float(clean_mask.size)
             if area_ratio > float(self.sam_max_mask_area_ratio):
                 print(f"Rejecting SAM mask by area ratio={area_ratio:.3f}")
@@ -249,8 +265,9 @@ class SamRgbdCubeDetectionPipeline:
                 plane_inlier_indices=None,
                 plane_inlier_cloud=None,
                 sam_rgb_image=rgb_image,
-                sam_masks=eroded_masks,
-                sam_overlay=build_mask_overlay(rgb_image, eroded_masks) if eroded_masks else None,
+                sam_masks=viz_masks,
+                sam_dino_boxes=dino_boxes,
+                sam_overlay=build_mask_overlay(rgb_image, viz_masks) if viz_masks else None,
             )
 
         if stage == "cluster":
@@ -266,8 +283,9 @@ class SamRgbdCubeDetectionPipeline:
                 plane_inlier_indices=None,
                 plane_inlier_cloud=None,
                 sam_rgb_image=rgb_image,
-                sam_masks=eroded_masks,
-                sam_overlay=build_mask_overlay(rgb_image, eroded_masks) if eroded_masks else None,
+                sam_masks=viz_masks,
+                sam_dino_boxes=dino_boxes,
+                sam_overlay=build_mask_overlay(rgb_image, viz_masks) if viz_masks else None,
             )
 
         plane_obbs = []
@@ -288,6 +306,12 @@ class SamRgbdCubeDetectionPipeline:
 
         selected_cubes = select_best_cubes(cubes, self.num_best_cubes)
         print(f"Selected {len(selected_cubes)} best cubes out of {len(cubes)} total")
+        for idx, cube in enumerate(selected_cubes):
+            center = cube.transform[:3, 3]
+            print(
+                f"Cube[{idx}] center=({center[0]:.4f}, {center[1]:.4f}, {center[2]:.4f}) "
+                f"fitness={cube.icp_fitness:.4f}"
+            )
 
         return CubeDetectionResult(
             original_cloud=original_cloud,
@@ -301,6 +325,7 @@ class SamRgbdCubeDetectionPipeline:
             plane_inlier_indices=None,
             plane_inlier_cloud=None,
             sam_rgb_image=rgb_image,
-            sam_masks=eroded_masks,
-            sam_overlay=build_mask_overlay(rgb_image, eroded_masks) if eroded_masks else None,
+            sam_masks=viz_masks,
+            sam_dino_boxes=dino_boxes,
+            sam_overlay=build_mask_overlay(rgb_image, viz_masks) if viz_masks else None,
         )

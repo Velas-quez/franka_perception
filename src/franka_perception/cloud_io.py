@@ -51,6 +51,73 @@ def _get_cv_bridge():
     return CvBridge()
 
 
+def _to_uint8_image(arr: np.ndarray) -> np.ndarray:
+    """Convert an image array to uint8 while preserving relative contrast."""
+    if arr.dtype == np.uint8:
+        return arr
+    arr_f = arr.astype(np.float32, copy=False)
+    finite = np.isfinite(arr_f)
+    if not np.any(finite):
+        return np.zeros(arr.shape, dtype=np.uint8)
+    mn = float(np.min(arr_f[finite]))
+    mx = float(np.max(arr_f[finite]))
+    if mx <= mn:
+        return np.zeros(arr.shape, dtype=np.uint8)
+    if mn >= 0.0 and mx <= 1.0:
+        return np.clip(arr_f * 255.0, 0.0, 255.0).astype(np.uint8)
+    scaled = (arr_f - mn) * (255.0 / (mx - mn))
+    return np.clip(scaled, 0.0, 255.0).astype(np.uint8)
+
+
+def _color_msg_to_rgb8(color_msg: Image) -> np.ndarray:
+    """Decode ROS color image robustly across common camera encodings."""
+    bridge = _get_cv_bridge()
+    try:
+        color = bridge.imgmsg_to_cv2(color_msg, desired_encoding="passthrough")
+    except Exception:
+        return bridge.imgmsg_to_cv2(color_msg, desired_encoding="rgb8")
+
+    enc = (color_msg.encoding or "").lower()
+    arr = np.asarray(color)
+    if arr.ndim == 2:
+        if arr.dtype != np.uint8:
+            arr = _to_uint8_image(arr)
+        return np.ascontiguousarray(np.stack([arr, arr, arr], axis=-1)).copy()
+
+    if arr.ndim != 3:
+        fallback = bridge.imgmsg_to_cv2(color_msg, desired_encoding="rgb8")
+        return np.ascontiguousarray(fallback).copy()
+
+    ch = arr.shape[2]
+    if ch == 1:
+        single = arr[:, :, 0]
+        if single.dtype != np.uint8:
+            single = _to_uint8_image(single)
+        return np.ascontiguousarray(np.stack([single, single, single], axis=-1)).copy()
+
+    if ch == 3:
+        if enc in {"bgr8", "8uc3"}:
+            arr = arr[:, :, ::-1]
+        # enc rgb8 and unknown 3-ch are kept as-is.
+        if arr.dtype != np.uint8:
+            arr = _to_uint8_image(arr)
+        return np.ascontiguousarray(arr).copy()
+
+    if ch >= 4:
+        arr4 = arr[:, :, :4]
+        if enc == "bgra8":
+            rgb = arr4[:, :, [2, 1, 0]]
+        else:
+            # rgba8 and unknown 4-channel encodings.
+            rgb = arr4[:, :, :3]
+        if rgb.dtype != np.uint8:
+            rgb = _to_uint8_image(rgb)
+        return np.ascontiguousarray(rgb).copy()
+
+    fallback = bridge.imgmsg_to_cv2(color_msg, desired_encoding="rgb8")
+    return np.ascontiguousarray(fallback).copy()
+
+
 def rgbd_msgs_to_numpy(
     color_msg: Image,
     depth_msg: Image,
@@ -59,7 +126,7 @@ def rgbd_msgs_to_numpy(
 ) -> Tuple[np.ndarray, np.ndarray]:
     """Convert ROS RGB-D messages to numpy arrays (RGB8 + depth in meters)."""
     bridge = _get_cv_bridge()
-    color = bridge.imgmsg_to_cv2(color_msg, desired_encoding="rgb8")
+    color = _color_msg_to_rgb8(color_msg)
 
     depth_encoding = depth_msg.encoding.lower()
     if depth_encoding in {"16uc1", "mono16"}:
@@ -127,8 +194,8 @@ def _o3d_images_from_msgs(
     """Convert ROS Image messages to Open3D images and infer depth scale."""
     bridge = _get_cv_bridge()
 
-    # Color: always convert to RGB8 for Open3D
-    color = bridge.imgmsg_to_cv2(color_msg, desired_encoding="rgb8")
+    # Color: decode robustly to RGB8 for Open3D
+    color = _color_msg_to_rgb8(color_msg)
 
     # Depth: keep native encoding
     depth_encoding = depth_msg.encoding.lower()
