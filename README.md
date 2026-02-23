@@ -151,3 +151,16 @@ Useful SAM filtering parameters (listener.launch):
 ## Development notes
 - Core pipeline in `pipeline.py`, visualization helpers in `visualization.py`.
 - Tune parameters in `params.py` or via launch.
+
+
+
+
+
+### Poseidon Calibrate Command Manual
+
+```bash
+  rosrun tf2_ros static_transform_publisher \
+  0.14701289805698045 -0.49165521178756444 0.5270105802649703 \
+  -0.13145696353538433 0.40233828143381567 0.30943671064551204 0.8515232798554752 \
+  fr3_link0 zedl_camera_link
+```
