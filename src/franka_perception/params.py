@@ -21,9 +21,9 @@ _TOPICS_BY_ENVIROMENT = {
     },
     "simulation": {
         "cloud_topic": "/zed2/zed_node/point_cloud/cloud_registered",
-        "rgb_topic": "/zed2/zed_node/rgb/image_rect_color",
+        "rgb_topic": "/zed2/zed_node/left/image_rect_color",
         "depth_topic": "/zed2/zed_node/depth/depth_registered",
-        "camera_info_topic": "/zed2/zed_node/rgb/camera_info",
+        "camera_info_topic": "/zed2/zed_node/left/camera_info",
     },
 }
 
@@ -139,7 +139,7 @@ def load_params(ns: str = "~") -> PerceptionParams:
         max_cluster_distance_from_plane_inliers=float(
             _p("max_cluster_distance_from_plane_inliers", 0.08)),
         max_cubes_per_cluster=int(_p("max_cubes_per_cluster", 2)),
-        num_best_cubes=int(_p("num_best_cubes", 2)),
+        num_best_cubes=int(_p("num_best_cubes", 100)),
         clearance=float(_p("clearance", 0.015)),
 
         # SAM backend and model/prompt configuration.
@@ -150,20 +150,20 @@ def load_params(ns: str = "~") -> PerceptionParams:
         sam_points_per_side=int(_p("sam_points_per_side", 32)),
         sam_pred_iou_thresh=float(_p("sam_pred_iou_thresh", 0.86)),
         sam_stability_score_thresh=float(_p("sam_stability_score_thresh", 0.92)),
-        sam_min_mask_region_area=int(_p("sam_min_mask_region_area", 150)),
+        sam_min_mask_region_area=int(_p("sam_min_mask_region_area", 0)),
         sam_prompt_text=_p("sam_prompt_text", "cube."),
         sam_prompt_box_threshold=float(_p("sam_prompt_box_threshold", 0.25)),
         sam_prompt_text_threshold=float(_p("sam_prompt_text_threshold", 0.25)),
         sam_grounding_model_id=_p("sam_grounding_model_id", "IDEA-Research/grounding-dino-base"),
-        sam_segmentor_model_id=_p("sam_segmentor_model_id", "facebook/sam2-hiera-large"),
+        sam_segmentor_model_id=_p("sam_segmentor_model_id", "facebook/sam-vit-base"), # alternatives: facebook/sam2-hiera-large facebook/sam-vit-huge
 
         # SAM mask filtering and 3D gating.
-        sam_max_masks=int(_p("sam_max_masks", 8)),
-        sam_min_mask_pixels=int(_p("sam_min_mask_pixels", 1200)),
-        sam_min_depth_pixels=int(_p("sam_min_depth_pixels", 600)),
-        sam_mask_erosion_kernel=int(_p("sam_mask_erosion_kernel", 3)),
+        sam_max_masks=int(_p("sam_max_masks", 100)),
+        sam_min_mask_pixels=int(_p("sam_min_mask_pixels", 0)),
+        sam_min_depth_pixels=int(_p("sam_min_depth_pixels", 0)),
+        sam_mask_erosion_kernel=int(_p("sam_mask_erosion_kernel", 2)),
         sam_mask_erosion_iterations=int(_p("sam_mask_erosion_iterations", 1)),
-        sam_min_points_per_cluster=int(_p("sam_min_points_per_cluster", 120)),
+        sam_min_points_per_cluster=int(_p("sam_min_points_per_cluster", 0)),
         sam_max_mask_area_ratio=float(_p("sam_max_mask_area_ratio", 0.35)),
         sam_plane_ransac_distance=float(_p("sam_plane_ransac_distance", 0.006)),
         sam_near_plane_distance=float(_p("sam_near_plane_distance", 0.006)),

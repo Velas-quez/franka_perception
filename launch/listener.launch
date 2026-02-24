@@ -5,7 +5,7 @@
   <arg name="sam_mode" default="sam3" doc="sam3 (prompted) | sam1 (automatic)" />
   <arg name="sam_checkpoint_path" default="" doc="Absolute path to SAM checkpoint (.pth)" />
   <arg name="sam_prompt_text" default="cube" doc="Text prompt for cube detection in SAM3 mode" />
-  <arg name="use_rgbd" default="false" doc="Use RGB-D topics instead of PointCloud2" />
+  <arg name="use_rgbd" default="true" doc="Use RGB-D topics instead of PointCloud2" />
   <arg name="enviroment" default="simulation" doc="poseidon|atena|simulation" />
 
   <node pkg="franka_perception"
