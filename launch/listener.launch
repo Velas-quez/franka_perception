@@ -4,71 +4,21 @@
   <arg name="show_original_cloud" default="false" doc="Render original cloud instead of filtered cloud" />
   <arg name="sam_mode" default="sam3" doc="sam3 (prompted) | sam1 (automatic)" />
   <arg name="sam_checkpoint_path" default="" doc="Absolute path to SAM checkpoint (.pth)" />
-  <arg name="sam_model_type" default="vit_b" doc="SAM model type: vit_b|vit_l|vit_h" />
-  <arg name="sam_device" default="auto" doc="auto|cpu|cuda" />
   <arg name="sam_prompt_text" default="cube" doc="Text prompt for cube detection in SAM3 mode" />
+  <arg name="use_rgbd" default="false" doc="Use RGB-D topics instead of PointCloud2" />
+  <arg name="enviroment" default="simulation" doc="poseidon|atena|simulation" />
 
   <node pkg="franka_perception"
         type="listener_node.py"
         name="listener"
-        output="screen"
-        args="--stage $(arg stage)">
+        output="screen">
+    <param name="stage"                value="$(arg stage)" />
     <param name="show_original_cloud"  value="$(arg show_original_cloud)" />
-    <param name="pipeline_mode"        value="sam_rgbd" />
-    <param name="use_rgbd"              value="true" />
-
-    <param name="cloud_topic"           value="/zed2/zed_node/point_cloud/cloud_registered" />
-    <param name="rgb_topic"             value="/zed2/zed_node/rgb/image_rect_color" />
-    <param name="depth_topic"           value="/zed2/zed_node/depth/depth_registered" />
-    <param name="camera_info_topic"     value="/zed2/zed_node/rgb/camera_info" />
-    <!-- <param name="cloud_topic"           value="/zed2/zed_node/point_cloud/cloud_registered" />
-    <param name="rgb_topic"             value="/zed2/zed_node/left/image_rect_color" />
-    <param name="depth_topic"           value="/zed2/zed_node/depth/depth_registered" />
-    <param name="camera_info_topic"     value="/zed2/zed_node/left/camera_info" /> -->
-
-    <param name="depth_scale"           value="0.0" />
-    <param name="depth_trunc"           value="3.0" />
-    <param name="rgbd_flip"             value="true" />
-    <param name="cube_side_length"      value="0.045" />
-    <param name="axis_size"             value="0.1" />
-    <param name="voxel_size"            value="0.0005" />
-    <param name="cluster_eps"           value="0.005" />
-    <param name="cluster_min_points"    value="10" />
-    <param name="base_plane_distance"   value="0.01" />
-    <param name="below_plane_tolerance" value="0.002" />
-    <param name="max_cluster_distance_from_plane_inliers" value="0.08" />
-    <param name="max_cubes_per_cluster" value="2" />
-    <param name="num_best_cubes"        value="100" />
-    <param name="clearance"             value="0.015" />
-
-    <!-- SAM-only params (used when pipeline_mode=sam_rgbd) -->
-    <param name="sam_mode"                    value="sam3" />
-    <param name="sam_checkpoint_path"         value="$(arg sam_checkpoint_path)" />
-    <param name="sam_model_type"              value="$(arg sam_model_type)" />
-    <param name="sam_device"                  value="$(arg sam_device)" />
-    <param name="sam_points_per_side"         value="32" />
-    <param name="sam_pred_iou_thresh"         value="0.86" />
-    <param name="sam_stability_score_thresh"  value="0.92" />
-    <param name="sam_min_mask_region_area"    value="150" />
-    <param name="sam_prompt_text"             value="$(arg sam_prompt_text)" />
-    <param name="sam_prompt_box_threshold"    value="0.25" />
-    <param name="sam_prompt_text_threshold"   value="0.25" />
-    <param name="sam_grounding_model_id"      value="IDEA-Research/grounding-dino-base" />
-    <param name="sam_segmentor_model_id"      value="facebook/sam2-hiera-large" />
-    <param name="sam_max_masks"               value="10000" />
-    <param name="sam_min_mask_pixels"         value="1200" />
-    <param name="sam_min_depth_pixels"        value="600" />
-    <param name="sam_mask_erosion_kernel"     value="3" />
-    <param name="sam_mask_erosion_iterations" value="1" />
-    <param name="sam_min_points_per_cluster"  value="120" />
-    <param name="sam_max_mask_area_ratio"     value="0.35" />
-    <param name="sam_plane_ransac_distance"   value="0.006" />
-    <param name="sam_near_plane_distance"     value="0.006" />
-    <param name="sam_max_near_plane_ratio"    value="0.85" />
-    <param name="sam_min_mask_plane_height"   value="0.012" />
-    <param name="sam_max_cluster_extent_multiplier" value="2.8" />
-    <param name="sam_max_cluster_volume_multiplier" value="7.0" />
-    <param name="sam_show_windows"            value="true" />
-    <param name="sam_window_wait_ms"          value="1" />
+    <param name="pipeline_mode"        value="$(arg pipeline_mode)" />
+    <param name="use_rgbd"             value="$(arg use_rgbd)" />
+    <param name="sam_mode"             value="$(arg sam_mode)" />
+    <param name="sam_checkpoint_path"  value="$(arg sam_checkpoint_path)" />
+    <param name="sam_prompt_text"      value="$(arg sam_prompt_text)" />
+    <param name="enviroment"           value="$(arg enviroment)" />
   </node>
 </launch>

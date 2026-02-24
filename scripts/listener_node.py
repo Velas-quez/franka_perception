@@ -1,8 +1,6 @@
 #!/usr/bin/env python3
 """Render the first received ZED2 point cloud with Open3D using shared pipeline."""
 
-import argparse
-import sys
 import threading
 from typing import Optional
 
@@ -22,9 +20,11 @@ from franka_perception.render.visualization import draw
 class SingleCloudNode:
     """Subscribe to a point cloud, process once, then render."""
 
-    def __init__(self, stage: str = "all", show_original_cloud: Optional[bool] = None) -> None:
+    def __init__(self, stage: Optional[str] = None, show_original_cloud: Optional[bool] = None) -> None:
         self.params = load_params()
-        self.stage = stage
+        self.stage = (stage or rospy.get_param("~stage", "all")).strip().lower()
+        if self.stage not in {"none", "filter", "cluster", "all"}:
+            raise ValueError("Invalid ~stage. Use: none|filter|cluster|all")
         self.pipeline_mode = self.params.pipeline_mode.strip().lower()
         if self.pipeline_mode not in {"classic", "sam_rgbd"}:
             raise ValueError("Invalid ~pipeline_mode. Use 'classic' or 'sam_rgbd'.")
@@ -259,26 +259,9 @@ class SingleCloudNode:
             rospy.logerr("Failed to render point cloud: %s", exc)
 
 
-def _parse_args():
-    parser = argparse.ArgumentParser(description="Render a ZED point cloud through the cube pipeline.")
-    parser.add_argument(
-        "--stage",
-        choices=["none", "filter", "cluster", "all"],
-        default="all",
-        help="Stop the pipeline after this stage for visualization.",
-    )
-    parser.add_argument(
-        "--show-original-cloud",
-        action="store_true",
-        help="Render the original cloud instead of the filtered cloud.",
-    )
-    return parser.parse_args(rospy.myargv(argv=sys.argv)[1:])
-
-
 def main() -> None:
-    args = _parse_args()
     rospy.init_node("listener", anonymous=False)
-    node = SingleCloudNode(stage=args.stage, show_original_cloud=args.show_original_cloud)
+    node = SingleCloudNode()
     node.run()
 
 
