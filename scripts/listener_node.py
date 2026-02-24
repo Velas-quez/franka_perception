@@ -11,12 +11,12 @@ import rospy
 from sensor_msgs.msg import CameraInfo, Image, PointCloud2
 import message_filters
 
-from franka_perception.cloud_io import msg_to_xyz, has_points, rgbd_msgs_to_xyz
+from franka_perception.core.cloud_io import msg_to_xyz, has_points, rgbd_msgs_to_xyz
 from franka_perception.params import load_params
-from franka_perception.pipeline import CubeDetectionPipeline
-from franka_perception.sam_rgbd_pipeline import SamRgbdCubeDetectionPipeline
-from franka_perception.sam_visualization import show_dino_and_sam
-from franka_perception.visualization import draw
+from franka_perception.pipelines.pipeline import CubeDetectionPipeline
+from franka_perception.pipelines.sam_rgbd_pipeline import SamRgbdCubeDetectionPipeline
+from franka_perception.render.sam_visualization import show_dino_and_sam
+from franka_perception.render.visualization import draw
 
 
 class SingleCloudNode:

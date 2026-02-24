@@ -6,11 +6,12 @@ from typing import List, Optional
 import numpy as np
 import open3d as o3d
 
-from .cloud_io import depth_to_xyz, rgbd_msgs_to_numpy
-from .cube_fitting import CubeEstimate, fit_cubes_in_cluster, select_best_cubes
-from .pipeline import CubeDetectionResult
-from .sam_masking import SamSegmenter, erode_mask, select_mask_candidates
-from .sam_visualization import build_mask_overlay
+from franka_perception.pipelines.result_type import CubeDetectionResult
+
+from ..core.cloud_io import depth_to_xyz, rgbd_msgs_to_numpy
+from ..geometry.cube_fitting import CubeEstimate, fit_cubes_in_cluster, select_best_cubes
+from ..geometry.sam_masking import SamSegmenter, erode_mask, select_mask_candidates
+from ..render.sam_visualization import build_mask_overlay
 
 
 class SamRgbdCubeDetectionPipeline:

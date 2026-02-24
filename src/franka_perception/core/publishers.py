@@ -12,7 +12,7 @@ from sensor_msgs.msg import PointCloud2
 from std_msgs.msg import Header
 from visualization_msgs.msg import Marker, MarkerArray
 
-from .cube_fitting import CubeEstimate
+from ..geometry.cube_fitting import CubeEstimate
 
 
 def publish_poses(cubes: Iterable[CubeEstimate],

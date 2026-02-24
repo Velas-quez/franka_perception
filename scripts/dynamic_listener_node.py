@@ -15,12 +15,12 @@ from sensor_msgs.msg import CameraInfo, Image, PointCloud2
 from std_msgs.msg import Header
 from visualization_msgs.msg import MarkerArray
 
-from franka_perception.cloud_io import msg_to_xyz, has_points, rgbd_msgs_to_xyz
+from franka_perception.core.cloud_io import msg_to_xyz, has_points, rgbd_msgs_to_xyz
 from franka_perception.params import load_params
-from franka_perception.pipeline import CubeDetectionPipeline
-from franka_perception.sam_rgbd_pipeline import SamRgbdCubeDetectionPipeline
-from franka_perception.publishers import publish_markers, publish_poses, publish_point_clouds
-from franka_perception.cube_fitting import CubeEstimate
+from franka_perception.pipelines.pipeline import CubeDetectionPipeline
+from franka_perception.pipelines.sam_rgbd_pipeline import SamRgbdCubeDetectionPipeline
+from franka_perception.core.publishers import publish_markers, publish_poses, publish_point_clouds
+from franka_perception.geometry.cube_fitting import CubeEstimate
 
 
 class DynamicListenerNode:

@@ -2,8 +2,7 @@
 """Open3D visualization helpers."""
 
 import open3d as o3d
-
-from .pipeline import CubeDetectionResult
+from franka_perception.pipelines.result_type import CubeDetectionResult
 
 
 def build_geometries(result: CubeDetectionResult,
