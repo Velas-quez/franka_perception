@@ -28,10 +28,7 @@ def has_points(arr: Optional[np.ndarray]) -> bool:
 
 def camera_info_to_intrinsics(camera_info: CameraInfo) -> o3d.camera.PinholeCameraIntrinsic:
     """Build Open3D intrinsics from a ROS CameraInfo message."""
-    fx = camera_info.K[0]
-    fy = camera_info.K[4]
-    cx = camera_info.K[2]
-    cy = camera_info.K[5]
+    fx, fy, cx, cy = _intrinsics_from_camera_info(camera_info)
     return o3d.camera.PinholeCameraIntrinsic(
         width=camera_info.width,
         height=camera_info.height,
@@ -39,6 +36,24 @@ def camera_info_to_intrinsics(camera_info: CameraInfo) -> o3d.camera.PinholeCame
         fy=fy,
         cx=cx,
         cy=cy,
+    )
+
+
+def _intrinsics_from_camera_info(camera_info: CameraInfo) -> Tuple[float, float, float, float]:
+    """Return fx, fy, cx, cy preferring projection matrix P for rectified streams."""
+    if len(camera_info.P) >= 7:
+        fx_p = float(camera_info.P[0])
+        fy_p = float(camera_info.P[5])
+        cx_p = float(camera_info.P[2])
+        cy_p = float(camera_info.P[6])
+        if fx_p > 0.0 and fy_p > 0.0:
+            return fx_p, fy_p, cx_p, cy_p
+
+    return (
+        float(camera_info.K[0]),
+        float(camera_info.K[4]),
+        float(camera_info.K[2]),
+        float(camera_info.K[5]),
     )
 
 
@@ -171,10 +186,7 @@ def depth_to_xyz(
         return np.empty((0, 3), dtype=np.float64)
 
     z = depth_m[rows, cols].astype(np.float64)
-    fx = float(camera_info.K[0])
-    fy = float(camera_info.K[4])
-    cx = float(camera_info.K[2])
-    cy = float(camera_info.K[5])
+    fx, fy, cx, cy = _intrinsics_from_camera_info(camera_info)
 
     x = (cols.astype(np.float64) - cx) * z / fx
     y = (rows.astype(np.float64) - cy) * z / fy

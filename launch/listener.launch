@@ -6,6 +6,7 @@
   <arg name="sam_checkpoint_path" default="" doc="Absolute path to SAM checkpoint (.pth)" />
   <arg name="sam_prompt_text" default="cube" doc="Text prompt for cube detection in SAM3 mode" />
   <arg name="use_rgbd" default="true" doc="Use RGB-D topics instead of PointCloud2" />
+  <arg name="rgbd_flip" default="false" doc="Flip RGB-D cloud axes for Open3D-style visualization only" />
   <arg name="enviroment" default="simulation" doc="poseidon|atena|simulation" />
 
   <node pkg="franka_perception"
@@ -16,6 +17,7 @@
     <param name="show_original_cloud"  value="$(arg show_original_cloud)" />
     <param name="pipeline_mode"        value="$(arg pipeline_mode)" />
     <param name="use_rgbd"             value="$(arg use_rgbd)" />
+    <param name="rgbd_flip"            value="$(arg rgbd_flip)" />
     <param name="sam_mode"             value="$(arg sam_mode)" />
     <param name="sam_checkpoint_path"  value="$(arg sam_checkpoint_path)" />
     <param name="sam_prompt_text"      value="$(arg sam_prompt_text)" />

@@ -23,7 +23,7 @@ _TOPICS_BY_ENVIROMENT = {
         "cloud_topic": "/zed2/zed_node/point_cloud/cloud_registered",
         "rgb_topic": "/zed2/zed_node/left/image_rect_color",
         "depth_topic": "/zed2/zed_node/depth/depth_registered",
-        "camera_info_topic": "/zed2/zed_node/left/camera_info",
+        "camera_info_topic": "/zed2/zed_node/depth/camera_info",
     },
 }
 
@@ -126,7 +126,7 @@ def load_params(ns: str = "~") -> PerceptionParams:
         # RGB-D to point-cloud conversion.
         depth_scale=float(_p("depth_scale", 0.0)),
         depth_trunc=float(_p("depth_trunc", 3.0)),
-        rgbd_flip=bool(_p("rgbd_flip", True)),
+        rgbd_flip=bool(_p("rgbd_flip", False)),
 
         # Classic geometry pipeline.
         cube_side_length=float(_p("cube_side_length", 0.045)),

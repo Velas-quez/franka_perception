@@ -50,6 +50,7 @@ source devel/setup.bash
 - `sam_checkpoint_path`: SAM1 checkpoint path (optional)
 - `sam_prompt_text`: text prompt used in SAM3
 - `use_rgbd`: `true|false`
+- `rgbd_flip`: `true|false` (default `false`; keep `false` when using TF to world)
 - `enviroment`: `poseidon|atena|simulation`
 
 ### `dynamic_listener.launch`
@@ -58,6 +59,7 @@ source devel/setup.bash
 - `sam_checkpoint_path`: SAM1 checkpoint path (optional)
 - `sam_prompt_text`: text prompt used in SAM3
 - `use_rgbd`: `true|false`
+- `rgbd_flip`: `true|false` (default `false`; keep `false` when using TF to world)
 - `enviroment`: `poseidon|atena|simulation`
 
 ## Environment-based topic selection
@@ -118,6 +120,7 @@ roslaunch franka_perception dynamic_listener.launch \
 ## Published topics (dynamic listener)
 - `~cube_poses` (`geometry_msgs/PoseArray`)
 - `~cube_markers` (`visualization_msgs/MarkerArray`)
+- `~reconstructed_cloud` (`sensor_msgs/PointCloud2`) - nuvem reconstruida a partir de RGB-D
 
 ### Poseidon calibrate command
 ```bash

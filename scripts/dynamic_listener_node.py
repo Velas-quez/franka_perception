@@ -11,6 +11,7 @@ import message_filters
 import tf2_ros
 import tf.transformations as tf_trans
 from geometry_msgs.msg import PoseArray
+from sensor_msgs import point_cloud2 as pc2
 from sensor_msgs.msg import CameraInfo, Image, PointCloud2
 from std_msgs.msg import Header
 from visualization_msgs.msg import MarkerArray
@@ -96,6 +97,7 @@ class DynamicListenerNode:
 
         self._pose_pub = rospy.Publisher("~cube_poses", PoseArray, queue_size=5)
         self._marker_pub = rospy.Publisher("~cube_markers", MarkerArray, queue_size=5)
+        self._reconstructed_cloud_pub = rospy.Publisher("~reconstructed_cloud", PointCloud2, queue_size=1)
         self._cloud_pubs = {}  # Dictionary to store publishers for each cube's point cloud
 
         self._cloud_sub = None
@@ -103,18 +105,17 @@ class DynamicListenerNode:
         self._depth_sub = None
         self._info_sub = None
         self._sync = None
-        self._latest_info: Optional[CameraInfo] = None
 
         if self.params.use_rgbd:
             self._rgb_sub = message_filters.Subscriber(self.params.rgb_topic, Image)
             self._depth_sub = message_filters.Subscriber(self.params.depth_topic, Image)
-            self._info_sub = rospy.Subscriber(
-                self.params.camera_info_topic, CameraInfo, self._info_cb, queue_size=1)
+            self._info_sub = message_filters.Subscriber(self.params.camera_info_topic, CameraInfo)
             self._sync = message_filters.ApproximateTimeSynchronizer(
-                [self._rgb_sub, self._depth_sub], queue_size=5, slop=0.2)
+                [self._rgb_sub, self._depth_sub, self._info_sub], queue_size=5, slop=0.2)
             self._sync.registerCallback(self._rgbd_cb)
-            rospy.loginfo("Listening for RGB-D on %s + %s (mode=%s)",
-                          self.params.rgb_topic, self.params.depth_topic, self.pipeline_mode)
+            rospy.loginfo("Listening for RGB-D on %s + %s + %s (mode=%s)",
+                          self.params.rgb_topic, self.params.depth_topic,
+                          self.params.camera_info_topic, self.pipeline_mode)
         else:
             self._cloud_sub = rospy.Subscriber(
                 self.params.cloud_topic, PointCloud2, self._cloud_cb, queue_size=1)
@@ -133,30 +134,11 @@ class DynamicListenerNode:
             self._cloud_ready.set()
         rospy.loginfo("Captured cloud with %d points", points.shape[0])
 
-    def _info_cb(self, msg: CameraInfo) -> None:
-        with self._lock:
-            self._latest_info = msg
-
-    def _rgbd_cb(self, rgb_msg: Image, depth_msg: Image) -> None:
+    def _rgbd_cb(self, rgb_msg: Image, depth_msg: Image, info_msg: CameraInfo) -> None:
         if self._cloud_ready.is_set():
             return
-        with self._lock:
-            info_msg = self._latest_info
-        if info_msg is None:
-            rospy.logwarn_throttle(2.0, "Waiting for camera_info on %s",
-                                   self.params.camera_info_topic)
-            return
-        if self.pipeline_mode == "sam_rgbd":
-            with self._lock:
-                self._rgb_msg = rgb_msg
-                self._depth_msg = depth_msg
-                self._camera_info_msg = info_msg
-                self._latest_header = rgb_msg.header
-                self._cloud_ready.set()
-            return
-
         depth_scale = self.params.depth_scale if self.params.depth_scale > 0.0 else None
-        points = rgbd_msgs_to_xyz(
+        reconstructed_points = rgbd_msgs_to_xyz(
             rgb_msg,
             depth_msg,
             info_msg,
@@ -164,14 +146,37 @@ class DynamicListenerNode:
             depth_trunc=self.params.depth_trunc,
             flip=self.params.rgbd_flip,
         )
-        if not has_points(points):
+        if has_points(reconstructed_points):
+            self._publish_reconstructed_cloud(reconstructed_points, depth_msg.header)
+
+        if self.pipeline_mode == "sam_rgbd":
+            with self._lock:
+                self._rgb_msg = rgb_msg
+                self._depth_msg = depth_msg
+                self._camera_info_msg = info_msg
+                self._latest_header = depth_msg.header
+                self._cloud_ready.set()
+            return
+
+        if not has_points(reconstructed_points):
             rospy.logwarn("Received empty/invalid RGB-D; ignoring")
             return
         with self._lock:
-            self._points = points
-            self._latest_header = info_msg.header
+            self._points = reconstructed_points
+            self._latest_header = depth_msg.header
             self._cloud_ready.set()
-        rospy.loginfo("Captured RGB-D cloud with %d points", points.shape[0])
+        rospy.loginfo("Captured RGB-D cloud with %d points", reconstructed_points.shape[0])
+
+    def _publish_reconstructed_cloud(self, points: np.ndarray, header: Optional[Header]) -> None:
+        """Publish RGB-D reconstructed cloud for RViz debugging."""
+        if header is None or not has_points(points):
+            return
+
+        cloud_header = Header()
+        cloud_header.frame_id = header.frame_id
+        cloud_header.stamp = header.stamp
+        cloud_msg = pc2.create_cloud_xyz32(cloud_header, points.astype(np.float32, copy=False))
+        self._reconstructed_cloud_pub.publish(cloud_msg)
 
     def run(self) -> None:
         rospy.loginfo("Waiting for point clouds...")
@@ -242,20 +247,25 @@ class DynamicListenerNode:
     def _transform_cubes_to_target(self,
                                    cubes: Iterable[CubeEstimate],
                                    header: Optional[Header]):
-        """Transform estimated cube poses to target frame only (cheap)."""
-        if header is None:
+        """Transform estimated cube poses to target frame only"""
+        target_frame = self.params.target_frame
+        if header is None or target_frame is None:
+            return cubes, header
+
+        target_frame = str(target_frame).strip()
+        if target_frame == "" or target_frame.lower() == "none":
             return cubes, header
 
         try:
             tf_msg = self._tf_buffer.lookup_transform(
-                self.params.target_frame,
+                target_frame,
                 header.frame_id,
                 header.stamp,
                 rospy.Duration(0.2),
             )
         except (tf2_ros.LookupException, tf2_ros.ExtrapolationException, tf2_ros.ConnectivityException) as exc:
             rospy.logwarn("TF lookup failed (%s -> %s): %s",
-                          header.frame_id, self.params.target_frame, exc)
+                          header.frame_id, target_frame, exc)
             return cubes, header
 
         T = _transform_to_matrix(tf_msg)
@@ -274,7 +284,7 @@ class DynamicListenerNode:
             )
 
         new_header = Header()
-        new_header.frame_id = self.params.target_frame
+        new_header.frame_id = target_frame
         new_header.stamp = header.stamp
         return transformed, new_header
 
