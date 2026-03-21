@@ -1,14 +1,27 @@
 #!/usr/bin/env python3
 """Open3D visualization helpers."""
 
+from typing import Iterable, Optional, Sequence, Tuple
+
+import numpy as np
 import open3d as o3d
 from franka_perception.pipelines.result_type import CubeDetectionResult
+
+
+def _painted_cloud_from_points(points: np.ndarray,
+                               color: Sequence[float]) -> o3d.geometry.PointCloud:
+    """Create a colored point cloud from an Nx3 numpy array."""
+    cloud = o3d.geometry.PointCloud()
+    cloud.points = o3d.utility.Vector3dVector(points)
+    cloud.paint_uniform_color(list(color))
+    return cloud
 
 
 def build_geometries(result: CubeDetectionResult,
                      axis_size: float = 0.1,
                      paint_cloud: bool = True,
-                     show_original_cloud: bool = False):
+                     show_original_cloud: bool = False,
+                     extra_clouds: Optional[Iterable[Tuple[np.ndarray, Sequence[float]]]] = None):
     """Create list of Open3D geometries for rendering."""
     geometries = []
     has_masked = result.masked_cloud is not None and len(result.masked_cloud.points) > 0
@@ -27,6 +40,12 @@ def build_geometries(result: CubeDetectionResult,
             pcd.paint_uniform_color([0.6, 0.6, 0.6])
         geometries.append(pcd)
 
+    for extra_cloud in extra_clouds or ():
+        points, color = extra_cloud
+        if points is None or points.size == 0:
+            continue
+        geometries.append(_painted_cloud_from_points(points, color))
+
     axis = o3d.geometry.TriangleMesh.create_coordinate_frame(
         size=float(axis_size),
         origin=[0.0, 0.0, 0.0],
@@ -42,15 +61,17 @@ def build_geometries(result: CubeDetectionResult,
 
 def draw(result: CubeDetectionResult,
          axis_size: float = 0.1,
-         show_original_cloud: bool = False) -> None:
+         show_original_cloud: bool = False,
+         extra_clouds: Optional[Iterable[Tuple[np.ndarray, Sequence[float]]]] = None) -> None:
     geoms = build_geometries(
         result,
         axis_size=axis_size,
         show_original_cloud=show_original_cloud,
+        extra_clouds=extra_clouds,
     )
     o3d.visualization.draw_geometries(
         geoms,
-        window_name="ZED Point Cloud",
+        window_name="ZED Point Clouds",
         width=960,
         height=540,
     )

@@ -8,16 +8,16 @@ import rospy
 
 _TOPICS_BY_ENVIROMENT = {
     "poseidon": {
-        "cloud_topic": "/group1/zed2i/zed_node/point_cloud/cloud_registered",
-        "rgb_topic": "/group1/zed2i/zed_node/rgb/image_rect_color",
-        "depth_topic": "/group1/zed2i/zed_node/depth/depth_registered",
-        "camera_info_topic": "/group1/zed2i/zed_node/rgb/camera_info",
+        "cloud_topic": "/group1/zed2/zed_node/point_cloud/cloud_registered",
+        "rgb_topic": "/group1/zed2/zed_node/rgb/image_rect_color",
+        "depth_topic": "/group1/zed2/zed_node/depth/depth_registered",
+        "camera_info_topic": "/group1/zed2/zed_node/rgb/camera_info",
     },
     "atena": {
-        "cloud_topic": "/group1/zed2/zed_node/point_cloud/cloud_registered",
-        "rgb_topic": "/group1/zed2/zed_node/left/image_rect_color",
-        "depth_topic": "/group1/zed2/zed_node/depth/depth_registered",
-        "camera_info_topic": "/group1/zed2/zed_node/left/camera_info",
+        "cloud_topic": "/group1/zed2i/zed_node/point_cloud/cloud_registered",
+        "rgb_topic": "/group1/zed2i/zed_node/left/image_rect_color",
+        "depth_topic": "/group1/zed2i/zed_node/depth/depth_registered",
+        "camera_info_topic": "/group1/zed2i/zed_node/left/camera_info",
     },
     "simulation": {
         "cloud_topic": "/zed2/zed_node/point_cloud/cloud_registered",

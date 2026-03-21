@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Render the first received ZED2 point cloud with Open3D using shared pipeline."""
+"""Render point-cloud and RGB-D inputs with Open3D using the shared pipeline."""
 
 import threading
 from typing import Optional
@@ -18,7 +18,7 @@ from franka_perception.render.visualization import draw
 
 
 class SingleCloudNode:
-    """Subscribe to a point cloud, process once, then render."""
+    """Capture point-cloud and RGB-D inputs once, process one, and render both."""
 
     def __init__(self, stage: Optional[str] = None, show_original_cloud: Optional[bool] = None) -> None:
         self.params = load_params()
@@ -84,7 +84,8 @@ class SingleCloudNode:
                 max_cluster_distance_from_plane_inliers=self.params.max_cluster_distance_from_plane_inliers,
                 below_plane_tolerance=self.params.below_plane_tolerance,
             )
-        self._points: Optional[np.ndarray] = None
+        self._cloud_topic_points: Optional[np.ndarray] = None
+        self._rgbd_points: Optional[np.ndarray] = None
         self._rgb_msg: Optional[Image] = None
         self._depth_msg: Optional[Image] = None
         self._camera_info_msg: Optional[CameraInfo] = None
@@ -98,24 +99,36 @@ class SingleCloudNode:
         self._sync = None
         self._latest_info: Optional[CameraInfo] = None
 
-        if self.params.use_rgbd:
-            self._rgb_sub = message_filters.Subscriber(self.params.rgb_topic, Image)
-            self._depth_sub = message_filters.Subscriber(self.params.depth_topic, Image)
-            self._info_sub = rospy.Subscriber(
-                self.params.camera_info_topic, CameraInfo, self._info_cb, queue_size=1)
-            self._sync = message_filters.ApproximateTimeSynchronizer(
-                [self._rgb_sub, self._depth_sub], queue_size=5, slop=0.2)
-            self._sync.registerCallback(self._rgbd_cb)
-            rospy.loginfo(
-                "Waiting for RGB-D on %s + %s (mode=%s)",
-                self.params.rgb_topic,
-                self.params.depth_topic,
-                self.pipeline_mode,
+        self._cloud_sub = rospy.Subscriber(
+            self.params.cloud_topic, PointCloud2, self._cloud_cb, queue_size=1)
+        self._rgb_sub = message_filters.Subscriber(self.params.rgb_topic, Image)
+        self._depth_sub = message_filters.Subscriber(self.params.depth_topic, Image)
+        self._info_sub = rospy.Subscriber(
+            self.params.camera_info_topic, CameraInfo, self._info_cb, queue_size=1)
+        self._sync = message_filters.ApproximateTimeSynchronizer(
+            [self._rgb_sub, self._depth_sub], queue_size=5, slop=0.2)
+        self._sync.registerCallback(self._rgbd_cb)
+        rospy.loginfo(
+            "Waiting for point cloud on %s and RGB-D on %s + %s (mode=%s, pipeline_source=%s)",
+            self.params.cloud_topic,
+            self.params.rgb_topic,
+            self.params.depth_topic,
+            self.pipeline_mode,
+            "rgbd" if self.params.use_rgbd else "point_cloud",
+        )
+
+    def _ready_locked(self) -> bool:
+        has_cloud_topic = has_points(self._cloud_topic_points)
+        has_rgbd_cloud = has_points(self._rgbd_points)
+        if self.pipeline_mode == "sam_rgbd":
+            return (
+                has_cloud_topic
+                and has_rgbd_cloud
+                and self._rgb_msg is not None
+                and self._depth_msg is not None
+                and self._camera_info_msg is not None
             )
-        else:
-            self._cloud_sub = rospy.Subscriber(
-                self.params.cloud_topic, PointCloud2, self._cloud_cb, queue_size=1)
-            rospy.loginfo("Waiting for point cloud on %s", self.params.cloud_topic)
+        return has_cloud_topic and has_rgbd_cloud
 
     def _cloud_cb(self, msg: PointCloud2) -> None:
         if self._cloud_ready.is_set():
@@ -125,11 +138,18 @@ class SingleCloudNode:
             rospy.logwarn("Received empty/invalid point cloud; ignoring")
             return
         with self._lock:
-            self._points = points
-            self._cloud_ready.set()
-        rospy.loginfo("Captured cloud with %d points", points.shape[0])
+            if has_points(self._cloud_topic_points):
+                return
+            self._cloud_topic_points = points
+            if self._ready_locked():
+                self._cloud_ready.set()
+        rospy.loginfo("Captured point-cloud topic with %d points", points.shape[0])
+        self._unregister_cloud_subscriber()
+
+    def _unregister_cloud_subscriber(self) -> None:
         try:
-            self._cloud_sub.unregister()
+            if self._cloud_sub is not None:
+                self._cloud_sub.unregister()
         except Exception:
             pass
 
@@ -146,16 +166,6 @@ class SingleCloudNode:
             rospy.logwarn_throttle(2.0, "Waiting for camera_info on %s",
                                    self.params.camera_info_topic)
             return
-        if self.pipeline_mode == "sam_rgbd":
-            with self._lock:
-                self._rgb_msg = rgb_msg
-                self._depth_msg = depth_msg
-                self._camera_info_msg = info_msg
-                self._cloud_ready.set()
-            rospy.loginfo("Captured synchronized RGB-D frame for SAM pipeline")
-            self._unregister_rgbd_subscribers()
-            return
-
         depth_scale = self.params.depth_scale if self.params.depth_scale > 0.0 else None
         points = rgbd_msgs_to_xyz(
             rgb_msg,
@@ -169,8 +179,15 @@ class SingleCloudNode:
             rospy.logwarn("Received empty/invalid RGB-D; ignoring")
             return
         with self._lock:
-            self._points = points
-            self._cloud_ready.set()
+            if has_points(self._rgbd_points):
+                return
+            self._rgbd_points = points
+            if self.pipeline_mode == "sam_rgbd":
+                self._rgb_msg = rgb_msg
+                self._depth_msg = depth_msg
+                self._camera_info_msg = info_msg
+            if self._ready_locked():
+                self._cloud_ready.set()
         rospy.loginfo("Captured RGB-D cloud with %d points", points.shape[0])
         self._unregister_rgbd_subscribers()
 
@@ -188,7 +205,7 @@ class SingleCloudNode:
             pass
 
     def run(self) -> None:
-        rospy.loginfo("Waiting for the first valid cloud...")
+        rospy.loginfo("Waiting for one valid point-cloud topic frame and one valid RGB-D cloud...")
         while not rospy.is_shutdown():
             if self._cloud_ready.wait(timeout=0.2):
                 break
@@ -197,7 +214,11 @@ class SingleCloudNode:
             return
 
         with self._lock:
-            points = self._points.copy() if self._points is not None else None
+            cloud_topic_points = (
+                self._cloud_topic_points.copy()
+                if self._cloud_topic_points is not None else None
+            )
+            rgbd_points = self._rgbd_points.copy() if self._rgbd_points is not None else None
             rgb_msg = self._rgb_msg
             depth_msg = self._depth_msg
             info_msg = self._camera_info_msg
@@ -244,16 +265,24 @@ class SingleCloudNode:
                 if overlay is not None:
                     result.sam_overlay = overlay
         else:
+            points = rgbd_points if self.params.use_rgbd else cloud_topic_points
             if not has_points(points):
                 rospy.logerr("No valid point cloud received before shutdown")
                 return
             result = self.pipeline.process(points, stop_after=self.stage)
+
+        extra_clouds = []
+        if has_points(cloud_topic_points):
+            extra_clouds.append((cloud_topic_points, [0.15, 0.45, 0.95]))
+        if has_points(rgbd_points):
+            extra_clouds.append((rgbd_points, [0.95, 0.55, 0.15]))
 
         try:
             draw(
                 result,
                 axis_size=self.params.axis_size,
                 show_original_cloud=self.show_original_cloud,
+                extra_clouds=extra_clouds,
             )
         except Exception as exc:
             rospy.logerr("Failed to render point cloud: %s", exc)
