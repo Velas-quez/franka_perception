@@ -70,6 +70,7 @@ class DynamicListenerNode:
                 sam_min_mask_plane_height=self.params.sam_min_mask_plane_height,
                 sam_max_cluster_extent_multiplier=self.params.sam_max_cluster_extent_multiplier,
                 sam_max_cluster_volume_multiplier=self.params.sam_max_cluster_volume_multiplier,
+                support_plane_constraint=self.params.support_plane_constraint,
             )
         else:
             self.pipeline = CubeDetectionPipeline(
@@ -83,6 +84,7 @@ class DynamicListenerNode:
                 clearance=self.params.clearance,
                 max_cluster_distance_from_plane_inliers=self.params.max_cluster_distance_from_plane_inliers,
                 below_plane_tolerance=self.params.below_plane_tolerance,
+                support_plane_constraint=self.params.support_plane_constraint,
             )
         self._points: Optional[np.ndarray] = None
         self._rgb_msg: Optional[Image] = None

@@ -59,6 +59,7 @@ class PerceptionParams:
     max_cubes_per_cluster: int
     num_best_cubes: int
     clearance: float
+    support_plane_constraint: bool
 
     # SAM backend and model/prompt configuration.
     sam_mode: str
@@ -131,16 +132,17 @@ def load_params(ns: str = "~") -> PerceptionParams:
         # Classic geometry pipeline.
         cube_side_length=float(_p("cube_side_length", 0.045)),
         axis_size=float(_p("axis_size", 0.1)),
-        voxel_size=float(_p("voxel_size", 0.002)),
+        voxel_size=float(_p("voxel_size", 0.0)),
         cluster_eps=float(_p("cluster_eps", 0.005)),
         cluster_min_points=int(_p("cluster_min_points", 10)),
         base_plane_distance=float(_p("base_plane_distance", 0.01)),
         below_plane_tolerance=float(_p("below_plane_tolerance", 0.002)),
         max_cluster_distance_from_plane_inliers=float(
             _p("max_cluster_distance_from_plane_inliers", 0.08)),
-        max_cubes_per_cluster=int(_p("max_cubes_per_cluster", 2)),
+        max_cubes_per_cluster=int(_p("max_cubes_per_cluster", 1)),
         num_best_cubes=int(_p("num_best_cubes", 100)),
         clearance=float(_p("clearance", 0.015)),
+        support_plane_constraint=bool(_p("support_plane_constraint", True)),
 
         # SAM backend and model/prompt configuration.
         sam_mode=_p("sam_mode", "sam3"),

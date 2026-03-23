@@ -32,6 +32,7 @@ class SingleCloudNode:
             self.show_original_cloud = bool(rospy.get_param("~show_original_cloud", False))
         else:
             self.show_original_cloud = bool(show_original_cloud)
+        self.show_input_clouds = bool(rospy.get_param("~show_input_clouds", False))
         if self.pipeline_mode == "sam_rgbd" and not self.params.use_rgbd:
             raise ValueError("pipeline_mode=sam_rgbd requires ~use_rgbd:=true")
 
@@ -70,6 +71,7 @@ class SingleCloudNode:
                 sam_min_mask_plane_height=self.params.sam_min_mask_plane_height,
                 sam_max_cluster_extent_multiplier=self.params.sam_max_cluster_extent_multiplier,
                 sam_max_cluster_volume_multiplier=self.params.sam_max_cluster_volume_multiplier,
+                support_plane_constraint=self.params.support_plane_constraint,
             )
         else:
             self.pipeline = CubeDetectionPipeline(
@@ -83,6 +85,7 @@ class SingleCloudNode:
                 clearance=self.params.clearance,
                 max_cluster_distance_from_plane_inliers=self.params.max_cluster_distance_from_plane_inliers,
                 below_plane_tolerance=self.params.below_plane_tolerance,
+                support_plane_constraint=self.params.support_plane_constraint,
             )
         self._cloud_topic_points: Optional[np.ndarray] = None
         self._rgbd_points: Optional[np.ndarray] = None
@@ -271,11 +274,13 @@ class SingleCloudNode:
                 return
             result = self.pipeline.process(points, stop_after=self.stage)
 
-        extra_clouds = []
-        if has_points(cloud_topic_points):
-            extra_clouds.append((cloud_topic_points, [0.15, 0.45, 0.95]))
-        if has_points(rgbd_points):
-            extra_clouds.append((rgbd_points, [0.95, 0.55, 0.15]))
+        extra_clouds = None
+        if self.show_input_clouds:
+            extra_clouds = []
+            if has_points(cloud_topic_points):
+                extra_clouds.append((cloud_topic_points, [0.15, 0.45, 0.95]))
+            if has_points(rgbd_points):
+                extra_clouds.append((rgbd_points, [0.95, 0.55, 0.15]))
 
         try:
             draw(

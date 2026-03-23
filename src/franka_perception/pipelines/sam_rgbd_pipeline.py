@@ -48,7 +48,8 @@ class SamRgbdCubeDetectionPipeline:
                  sam_max_near_plane_ratio: float = 0.85,
                  sam_min_mask_plane_height: float = 0.012,
                  sam_max_cluster_extent_multiplier: float = 2.8,
-                 sam_max_cluster_volume_multiplier: float = 7.0) -> None:
+                 sam_max_cluster_volume_multiplier: float = 7.0,
+                 support_plane_constraint: bool = True) -> None:
         self.cube_side_length = cube_side_length
         self.voxel_size = voxel_size
         self.max_cubes_per_cluster = max_cubes_per_cluster
@@ -67,6 +68,7 @@ class SamRgbdCubeDetectionPipeline:
         self.sam_min_mask_plane_height = sam_min_mask_plane_height
         self.sam_max_cluster_extent_multiplier = sam_max_cluster_extent_multiplier
         self.sam_max_cluster_volume_multiplier = sam_max_cluster_volume_multiplier
+        self.support_plane_constraint = support_plane_constraint
         self.segmenter = SamSegmenter(
             mode=sam_mode,
             checkpoint_path=sam_checkpoint_path,
@@ -144,16 +146,22 @@ class SamRgbdCubeDetectionPipeline:
             )
 
         plane_model = None
+        plane_inliers = None
+        plane_inlier_cloud = None
         if len(original_cloud.points) >= 300:
             try:
-                model, _ = original_cloud.segment_plane(
+                model, inliers = original_cloud.segment_plane(
                     distance_threshold=max(0.001, float(self.sam_plane_ransac_distance)),
                     ransac_n=3,
                     num_iterations=1000,
                 )
                 plane_model = np.asarray(model, dtype=np.float64)
+                plane_inliers = np.asarray(inliers, dtype=np.int32)
+                plane_inlier_cloud = original_cloud.select_by_index(inliers)
             except RuntimeError:
                 plane_model = None
+                plane_inliers = None
+                plane_inlier_cloud = None
 
         sam_masks = self.segmenter.generate(
             rgb_image,
@@ -262,9 +270,9 @@ class SamRgbdCubeDetectionPipeline:
                 plane_obbs=[],
                 cubes=[],
                 failed_initial_meshes=[],
-                plane_model=None,
-                plane_inlier_indices=None,
-                plane_inlier_cloud=None,
+                plane_model=plane_model,
+                plane_inlier_indices=plane_inliers,
+                plane_inlier_cloud=plane_inlier_cloud,
                 sam_rgb_image=rgb_image,
                 sam_masks=viz_masks,
                 sam_dino_boxes=dino_boxes,
@@ -280,9 +288,9 @@ class SamRgbdCubeDetectionPipeline:
                 plane_obbs=[],
                 cubes=[],
                 failed_initial_meshes=[],
-                plane_model=None,
-                plane_inlier_indices=None,
-                plane_inlier_cloud=None,
+                plane_model=plane_model,
+                plane_inlier_indices=plane_inliers,
+                plane_inlier_cloud=plane_inlier_cloud,
                 sam_rgb_image=rgb_image,
                 sam_masks=viz_masks,
                 sam_dino_boxes=dino_boxes,
@@ -300,6 +308,8 @@ class SamRgbdCubeDetectionPipeline:
                 clearance=self.clearance,
                 plane_distance=0.0005,
                 plane_min_inliers=20,
+                support_plane_model=plane_model,
+                support_plane_constraint=self.support_plane_constraint,
             )
             cubes.extend(estimates)
             plane_obbs.extend(obbs)
@@ -322,9 +332,9 @@ class SamRgbdCubeDetectionPipeline:
             plane_obbs=plane_obbs,
             cubes=selected_cubes,
             failed_initial_meshes=failed_initial_meshes,
-            plane_model=None,
-            plane_inlier_indices=None,
-            plane_inlier_cloud=None,
+            plane_model=plane_model,
+            plane_inlier_indices=plane_inliers,
+            plane_inlier_cloud=plane_inlier_cloud,
             sam_rgb_image=rgb_image,
             sam_masks=viz_masks,
             sam_dino_boxes=dino_boxes,

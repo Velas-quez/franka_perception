@@ -28,7 +28,8 @@ class CubeDetectionPipeline:
                  num_best_cubes: int = 2,
                  clearance: float = 0.015,
                  max_cluster_distance_from_plane_inliers: float = 0.08,
-                 below_plane_tolerance: float = 0.002) -> None:
+                 below_plane_tolerance: float = 0.002,
+                 support_plane_constraint: bool = True) -> None:
         self.cube_side_length = cube_side_length
         self.voxel_size = voxel_size
         self.base_plane_distance = base_plane_distance
@@ -39,6 +40,7 @@ class CubeDetectionPipeline:
         self.clearance = clearance
         self.max_cluster_distance_from_plane_inliers = max_cluster_distance_from_plane_inliers
         self.below_plane_tolerance = below_plane_tolerance
+        self.support_plane_constraint = support_plane_constraint
 
     def process(self, points: np.ndarray, stop_after: str = "all") -> CubeDetectionResult:
         """Run the detection pipeline up to a chosen stage.
@@ -142,6 +144,8 @@ class CubeDetectionPipeline:
                 clearance=self.clearance,
                 plane_distance=0.0005,
                 plane_min_inliers=20,
+                support_plane_model=np.asarray(plane_model, dtype=float),
+                support_plane_constraint=self.support_plane_constraint,
             )
             cubes.extend(estimates)
             plane_obbs.extend(obbs)

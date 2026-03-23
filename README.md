@@ -46,10 +46,13 @@ source devel/setup.bash
 - `stage`: `none|filter|cluster|all`
 - `pipeline_mode`: `classic|sam_rgbd`
 - `show_original_cloud`: `true|false`
+- `show_input_clouds`: `true|false` (render both raw input clouds as debug overlay)
 - `sam_mode`: `sam3|sam1`
 - `sam_checkpoint_path`: SAM1 checkpoint path (optional)
 - `sam_prompt_text`: text prompt used in SAM3
 - `use_rgbd`: `true|false`
+- `support_plane_constraint`: `true|false` (default `true`; keep cube fitting supported by the main plane)
+- `support_plane_constraint`: `true|false` (default `true`; keep cube fitting supported by the main plane)
 - `rgbd_flip`: `true|false` (default `false`; keep `false` when using TF to world)
 - `enviroment`: `poseidon|atena|simulation`
 
