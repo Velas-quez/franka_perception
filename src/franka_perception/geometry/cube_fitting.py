@@ -10,6 +10,8 @@ import open3d as o3d
 from .cube_pose import estimate_cube_pose
 from .plane_segmentation import PlaneDetection, segment_planes
 
+_SUPPORT_PLANE_CONSTRAINT_MODES = {"fix_icp", "ajust", "none"}
+
 
 @dataclass
 class CubeEstimate:
@@ -122,6 +124,61 @@ def _cloud_distance_cost(source_points: np.ndarray,
     return float(np.mean(distances ** 2))
 
 
+def _evaluate_transform(source_points: np.ndarray,
+                        target_pcd: o3d.geometry.PointCloud,
+                        T: np.ndarray,
+                        threshold: float = 0.003) -> Tuple[float, float]:
+    transformed = (source_points @ T[:3, :3].T) + T[:3, 3]
+    cloud = o3d.geometry.PointCloud()
+    cloud.points = o3d.utility.Vector3dVector(transformed)
+    distances = np.asarray(cloud.compute_point_cloud_distance(target_pcd), dtype=float)
+    fitness = float(np.mean(distances <= threshold)) if distances.size else 0.0
+    rmse = float(np.sqrt(np.mean(distances ** 2))) if distances.size else float("inf")
+    return fitness, rmse
+
+
+def _normalize_support_plane_constraint(mode) -> str:
+    if isinstance(mode, bool):
+        return "fix_icp" if mode else "none"
+
+    text = str(mode).strip().lower()
+    aliases = {
+        "true": "fix_icp",
+        "false": "none",
+        "adjust": "ajust",
+    }
+    normalized = aliases.get(text, text)
+    return normalized if normalized in _SUPPORT_PLANE_CONSTRAINT_MODES else "fix_icp"
+
+
+def _adjust_transform_to_support_plane(T: np.ndarray,
+                                       cube_side_length: float,
+                                       support_plane_model: Optional[np.ndarray]) -> np.ndarray:
+    plane = _normalize_plane(support_plane_model, T[:3, 3])
+    if plane is None:
+        return T.copy()
+
+    plane_normal, plane_offset = plane
+    adjusted_T = T.copy()
+    R = _orthonormalize(adjusted_T[:3, :3])
+
+    support_axis_index = int(np.argmax(np.abs(R.T @ plane_normal)))
+    support_axis = R[:, support_axis_index]
+    if float(np.dot(support_axis, plane_normal)) < 0.0:
+        support_axis = -support_axis
+
+    align_R = _rotation_between_vectors(support_axis, plane_normal)
+    adjusted_R = _orthonormalize(align_R @ R)
+    adjusted_T[:3, :3] = adjusted_R
+
+    half_side = 0.5 * float(cube_side_length)
+    center = adjusted_T[:3, 3].copy()
+    signed_distance = float(np.dot(plane_normal, center) + plane_offset)
+    center = center + (half_side - signed_distance) * plane_normal
+    adjusted_T[:3, 3] = center
+    return adjusted_T
+
+
 def _supported_icp(source_pcd: o3d.geometry.PointCloud,
                    target_pcd: o3d.geometry.PointCloud,
                    init_T: np.ndarray,
@@ -222,13 +279,7 @@ def _supported_icp(source_pcd: o3d.geometry.PointCloud,
         step_xy *= 0.5
         step_yaw *= 0.5
 
-    threshold = 0.003
-    transformed = (source_points @ best_T[:3, :3].T) + best_T[:3, 3]
-    cloud = o3d.geometry.PointCloud()
-    cloud.points = o3d.utility.Vector3dVector(transformed)
-    distances = np.asarray(cloud.compute_point_cloud_distance(target_pcd), dtype=float)
-    fitness = float(np.mean(distances <= threshold)) if distances.size else 0.0
-    rmse = float(np.sqrt(np.mean(distances ** 2))) if distances.size else float("inf")
+    fitness, rmse = _evaluate_transform(source_points, target_pcd, best_T)
     return best_T, fitness, rmse
 
 
@@ -239,7 +290,7 @@ def fit_cubes_in_cluster(cluster_pcd: o3d.geometry.PointCloud,
                          plane_distance: float = 0.0005,
                          plane_min_inliers: int = 20,
                          support_plane_model: Optional[np.ndarray] = None,
-                         support_plane_constraint: bool = True) -> Tuple[List[CubeEstimate], List[o3d.geometry.OrientedBoundingBox], List[o3d.geometry.TriangleMesh]]:
+                         support_plane_constraint: str = "fix_icp") -> Tuple[List[CubeEstimate], List[o3d.geometry.OrientedBoundingBox], List[o3d.geometry.TriangleMesh]]:
     """Fit up to max_cubes into the cluster using plane detection + ICP.
 
     Returns:
@@ -251,6 +302,7 @@ def fit_cubes_in_cluster(cluster_pcd: o3d.geometry.PointCloud,
     obbs: List[o3d.geometry.OrientedBoundingBox] = []
     estimates: List[CubeEstimate] = []
     failed_initial_meshes: List[o3d.geometry.TriangleMesh] = []
+    support_plane_mode = _normalize_support_plane_constraint(support_plane_constraint)
 
     for _ in range(max_cubes):
         if len(remaining_pcd.points) < 30:
@@ -298,13 +350,14 @@ def fit_cubes_in_cluster(cluster_pcd: o3d.geometry.PointCloud,
         )
         cube_mesh.translate(-cube_mesh.get_center())
         source_pcd = cube_mesh.sample_points_poisson_disk(1500)
+        source_points = np.asarray(source_pcd.points, dtype=float)
         target_pcd = remaining_pcd.voxel_down_sample(voxel_size=0.002)
         if len(target_pcd.points) == 0:
             failed_initial_meshes.append(cube_mesh_init)
             break
 
         constrained_result = None
-        if support_plane_constraint:
+        if support_plane_mode == "fix_icp":
             constrained_result = _supported_icp(
                 source_pcd,
                 target_pcd,
@@ -332,6 +385,14 @@ def fit_cubes_in_cluster(cluster_pcd: o3d.geometry.PointCloud,
             )
             T_final = icp_result.transformation.copy()
             icp_fitness = float(icp_result.fitness)
+
+        if support_plane_mode == "ajust":
+            T_final = _adjust_transform_to_support_plane(
+                T_final,
+                cube_side_length,
+                support_plane_model,
+            )
+            icp_fitness, _ = _evaluate_transform(source_points, target_pcd, T_final)
 
         T_final[:3, :3] = _orthonormalize(T_final[:3, :3])
 

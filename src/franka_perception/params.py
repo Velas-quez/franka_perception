@@ -27,6 +27,29 @@ _TOPICS_BY_ENVIROMENT = {
     },
 }
 
+_SUPPORT_PLANE_CONSTRAINT_MODES = {"fix_icp", "ajust", "none"}
+
+
+def _normalize_support_plane_constraint(value) -> str:
+    if isinstance(value, bool):
+        return "fix_icp" if value else "none"
+
+    mode = str(value).strip().lower()
+    aliases = {
+        "true": "fix_icp",
+        "false": "none",
+        "adjust": "ajust",
+    }
+    mode = aliases.get(mode, mode)
+    if mode not in _SUPPORT_PLANE_CONSTRAINT_MODES:
+        rospy.logwarn(
+            "Unknown support_plane_constraint='%s'; falling back to 'fix_icp'. "
+            "Valid values: fix_icp|ajust|none",
+            value,
+        )
+        return "fix_icp"
+    return mode
+
 
 @dataclass
 class PerceptionParams:
@@ -59,7 +82,7 @@ class PerceptionParams:
     max_cubes_per_cluster: int
     num_best_cubes: int
     clearance: float
-    support_plane_constraint: bool
+    support_plane_constraint: str
 
     # SAM backend and model/prompt configuration.
     sam_mode: str
@@ -142,7 +165,8 @@ def load_params(ns: str = "~") -> PerceptionParams:
         max_cubes_per_cluster=int(_p("max_cubes_per_cluster", 1)),
         num_best_cubes=int(_p("num_best_cubes", 100)),
         clearance=float(_p("clearance", 0.015)),
-        support_plane_constraint=bool(_p("support_plane_constraint", True)),
+        support_plane_constraint=_normalize_support_plane_constraint(
+            _p("support_plane_constraint", "fix_icp")),
 
         # SAM backend and model/prompt configuration.
         sam_mode=_p("sam_mode", "sam3"),

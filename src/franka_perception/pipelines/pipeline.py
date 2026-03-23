@@ -29,7 +29,7 @@ class CubeDetectionPipeline:
                  clearance: float = 0.015,
                  max_cluster_distance_from_plane_inliers: float = 0.08,
                  below_plane_tolerance: float = 0.002,
-                 support_plane_constraint: bool = True) -> None:
+                 support_plane_constraint: str = "fix_icp") -> None:
         self.cube_side_length = cube_side_length
         self.voxel_size = voxel_size
         self.base_plane_distance = base_plane_distance

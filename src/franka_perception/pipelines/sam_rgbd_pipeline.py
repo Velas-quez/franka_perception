@@ -49,7 +49,7 @@ class SamRgbdCubeDetectionPipeline:
                  sam_min_mask_plane_height: float = 0.012,
                  sam_max_cluster_extent_multiplier: float = 2.8,
                  sam_max_cluster_volume_multiplier: float = 7.0,
-                 support_plane_constraint: bool = True) -> None:
+                 support_plane_constraint: str = "fix_icp") -> None:
         self.cube_side_length = cube_side_length
         self.voxel_size = voxel_size
         self.max_cubes_per_cluster = max_cubes_per_cluster
