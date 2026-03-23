@@ -1,17 +1,17 @@
 <launch>
   <arg name="stage" default="all" doc="Pipeline stage to render: none|filter|cluster|all" />
-  <arg name="pipeline_mode" default="classic" doc="classic|sam_rgbd" />
+  <arg name="pipeline_mode" default="sam_rgbd" doc="classic|sam_rgbd" />
   <arg name="show_original_cloud" default="false" doc="Render original cloud instead of filtered cloud" />
   <arg name="show_input_clouds" default="false" doc="Render both raw input clouds as debug overlays" />
   <arg name="sam_mode" default="sam3" doc="sam3 (prompted) | sam1 (automatic)" />
   <arg name="sam_checkpoint_path" default="" doc="Absolute path to SAM checkpoint (.pth)" />
   <arg name="sam_prompt_text" default="cube" doc="Text prompt for cube detection in SAM3 mode" />
   <arg name="use_rgbd" default="true" doc="Use RGB-D topics instead of PointCloud2" />
-  <arg name="support_plane_constraint" default="fix_icp" doc="Support-plane mode for cube fitting: fix_icp|ajust|none" />
+  <arg name="support_plane_constraint" default="ajust" doc="Support-plane mode for cube fitting: fix_icp|ajust|none" />
   <arg name="rgbd_flip" default="false" doc="Flip RGB-D cloud axes for Open3D-style visualization only" />
-  <arg name="enviroment" default="simulation" doc="poseidon|atena|simulation" />
+  <arg name="enviroment" default="simulation" doc="poseidon|atena|simulation (defines the input topics)" />
 
-  <node pkg="franka_perception"
+  <node pkg="franka_perception_thiago"
         type="listener_node.py"
         name="listener"
         output="screen">

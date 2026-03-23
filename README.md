@@ -20,8 +20,8 @@ rosdep install --from-paths src --ignore-src -r -y
 
 python3 -m pip install --upgrade pip
 python3 -m pip install -e src/franka_perception
-# with SAM extras:
-# python3 -m pip install -e "src/franka_perception[sam]"
+# with SAM extras (needed for main pipeline):
+python3 -m pip install -e "src/franka_perception[sam]"
 ```
 
 ## Build
@@ -124,11 +124,3 @@ roslaunch franka_perception dynamic_listener.launch \
 - `~cube_poses` (`geometry_msgs/PoseArray`)
 - `~cube_markers` (`visualization_msgs/MarkerArray`)
 - `~reconstructed_cloud` (`sensor_msgs/PointCloud2`) - nuvem reconstruida a partir de RGB-D
-
-### Poseidon calibrate command
-```bash
-rosrun tf2_ros static_transform_publisher \
-  0.14701289805698045 -0.49165521178756444 0.5270105802649703 \
-  -0.13145696353538433 0.40233828143381567 0.30943671064551204 0.8515232798554752 \
-  fr3_link0 zedl_camera_link
-```
