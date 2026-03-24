@@ -16,6 +16,13 @@ from ..render.sam_visualization import build_mask_overlay
 
 
 @dataclass
+class _SamMaskCandidate:
+    segmentation: np.ndarray
+    cluster: o3d.geometry.PointCloud
+    centroid: np.ndarray
+
+
+@dataclass
 class _SamFrameData:
     original_cloud: o3d.geometry.PointCloud
     plane_model: Optional[np.ndarray]
@@ -24,7 +31,7 @@ class _SamFrameData:
     rgb_image: np.ndarray
     viz_masks: List[np.ndarray]
     dino_boxes: np.ndarray
-    clusters: List[o3d.geometry.PointCloud]
+    candidates: List[_SamMaskCandidate]
 
 
 class SamRgbdCubeDetectionPipeline:
@@ -63,7 +70,8 @@ class SamRgbdCubeDetectionPipeline:
                  sam_max_cluster_extent_multiplier: float = 2.8,
                  sam_max_cluster_volume_multiplier: float = 7.0,
                  support_plane_constraint: str = "fix_icp",
-                 n_stack_cube_cloud: int = 1) -> None:
+                 n_stack_cube_cloud: int = 1,
+                 sam_batch_consistency_ratio: float = 1.0) -> None:
         self.cube_side_length = cube_side_length
         self.voxel_size = voxel_size
         self.max_cubes_per_cluster = max_cubes_per_cluster
@@ -84,6 +92,11 @@ class SamRgbdCubeDetectionPipeline:
         self.sam_max_cluster_volume_multiplier = sam_max_cluster_volume_multiplier
         self.support_plane_constraint = support_plane_constraint
         self.n_stack_cube_cloud = max(1, int(n_stack_cube_cloud))
+        self.sam_batch_consistency_ratio = min(
+            1.0, max(0.0, float(sam_batch_consistency_ratio)))
+        self.sam_batch_mask_iou_threshold = 0.35
+        self.sam_batch_mask_dilation_kernel = 3
+        self.sam_batch_mask_dilation_iterations = 1
         self.segmenter = SamSegmenter(
             mode=sam_mode,
             checkpoint_path=sam_checkpoint_path,
@@ -125,6 +138,30 @@ class SamRgbdCubeDetectionPipeline:
     @staticmethod
     def _cluster_centroid(points: np.ndarray) -> np.ndarray:
         return np.mean(points, axis=0, dtype=np.float64)
+
+    def _dilate_mask(self, mask: np.ndarray) -> np.ndarray:
+        kernel_size = int(self.sam_batch_mask_dilation_kernel)
+        iterations = int(self.sam_batch_mask_dilation_iterations)
+        if kernel_size <= 1 or iterations <= 0:
+            return mask.astype(bool)
+
+        try:
+            import cv2
+        except ImportError:
+            return mask.astype(bool)
+
+        kernel = np.ones((kernel_size, kernel_size), dtype=np.uint8)
+        dilated = cv2.dilate(mask.astype(np.uint8), kernel, iterations=iterations)
+        return dilated.astype(bool)
+
+    def _mask_iou(self, first: np.ndarray, second: np.ndarray) -> float:
+        first_mask = self._dilate_mask(first)
+        second_mask = self._dilate_mask(second)
+        union = int(np.count_nonzero(first_mask | second_mask))
+        if union == 0:
+            return 0.0
+        intersection = int(np.count_nonzero(first_mask & second_mask))
+        return float(intersection) / float(union)
 
     def _build_none_result(self,
                            rgb_msg,
@@ -210,7 +247,7 @@ class SamRgbdCubeDetectionPipeline:
         )
         print(f"SAM masks: generated={len(sam_masks)} kept={len(selected_masks)}")
 
-        clusters: List[o3d.geometry.PointCloud] = []
+        candidates: List[_SamMaskCandidate] = []
         viz_masks: List[np.ndarray] = []
         for mask in selected_masks:
             clean_mask = erode_mask(
@@ -218,7 +255,6 @@ class SamRgbdCubeDetectionPipeline:
                 kernel_size=self.sam_mask_erosion_kernel,
                 iterations=self.sam_mask_erosion_iterations,
             )
-            viz_masks.append(clean_mask)
             area_ratio = float(clean_mask.sum()) / float(clean_mask.size)
             if area_ratio > float(self.sam_max_mask_area_ratio):
                 print(f"Rejecting SAM mask by area ratio={area_ratio:.3f}")
@@ -281,7 +317,12 @@ class SamRgbdCubeDetectionPipeline:
                 print(f"Rejecting SAM mask by volume={volume:.6f}m^3")
                 continue
 
-            clusters.append(cluster)
+            viz_masks.append(clean_mask)
+            candidates.append(_SamMaskCandidate(
+                segmentation=clean_mask,
+                cluster=cluster,
+                centroid=self._cluster_centroid(np.asarray(cluster.points, dtype=np.float64)),
+            ))
 
         return _SamFrameData(
             original_cloud=original_cloud,
@@ -291,58 +332,61 @@ class SamRgbdCubeDetectionPipeline:
             rgb_image=rgb_image,
             viz_masks=viz_masks,
             dino_boxes=dino_boxes,
-            clusters=clusters,
+            candidates=candidates,
         )
 
-    def _merge_cluster_frames(self,
-                              cluster_frames: Sequence[List[o3d.geometry.PointCloud]]) -> List[o3d.geometry.PointCloud]:
-        if not cluster_frames:
+    def _merge_candidate_frames(self,
+                                candidate_frames: Sequence[List[_SamMaskCandidate]]) -> List[o3d.geometry.PointCloud]:
+        if not candidate_frames:
             return []
 
-        max_centroid_distance = max(
-            float(self.cube_side_length) * 0.75,
-            float(self.voxel_size) * 4.0,
-        )
         min_cluster_points = max(1, int(self.sam_min_points_per_cluster))
-        groups = []
+        required_frames = max(
+            1,
+            int(np.ceil(float(len(candidate_frames)) * self.sam_batch_consistency_ratio)),
+        )
+        tracks = []
 
-        for frame_clusters in cluster_frames:
-            used_groups = set()
-            for cluster in frame_clusters:
-                points = self._cluster_points(cluster)
-                if points.size == 0:
-                    continue
-                centroid = self._cluster_centroid(points)
-                best_group_idx = None
-                best_distance = float("inf")
-                for group_idx, group in enumerate(groups):
-                    if group_idx in used_groups:
+        for frame_idx, frame_candidates in enumerate(candidate_frames):
+            used_tracks = set()
+            for candidate in frame_candidates:
+                best_track_idx = None
+                best_iou = 0.0
+                for track_idx, track in enumerate(tracks):
+                    if track_idx in used_tracks or frame_idx in track["frame_indices"]:
                         continue
-                    distance = float(np.linalg.norm(centroid - group["centroid"]))
-                    if distance < best_distance:
-                        best_distance = distance
-                        best_group_idx = group_idx
+                    iou = self._mask_iou(candidate.segmentation, track["mask"])
+                    if iou > best_iou:
+                        best_iou = iou
+                        best_track_idx = track_idx
 
-                if best_group_idx is not None and best_distance <= max_centroid_distance:
-                    group = groups[best_group_idx]
-                    group["point_sets"].append(points)
-                    group["count"] += 1
-                    group["centroid"] = group["centroid"] + (
-                        centroid - group["centroid"]
-                    ) / float(group["count"])
-                    used_groups.add(best_group_idx)
+                if best_track_idx is not None and best_iou >= self.sam_batch_mask_iou_threshold:
+                    track = tracks[best_track_idx]
+                    track["mask"] = np.logical_or(track["mask"], candidate.segmentation)
+                    track["point_sets"].append(self._cluster_points(candidate.cluster))
+                    track["centroid"] = track["centroid"] + (
+                        candidate.centroid - track["centroid"]
+                    ) / float(len(track["point_sets"]))
+                    track["frame_indices"].add(frame_idx)
+                    used_tracks.add(best_track_idx)
                 else:
-                    groups.append({
-                        "point_sets": [points],
-                        "centroid": centroid.copy(),
-                        "count": 1,
+                    tracks.append({
+                        "mask": candidate.segmentation.copy(),
+                        "point_sets": [self._cluster_points(candidate.cluster)],
+                        "centroid": candidate.centroid.copy(),
+                        "frame_indices": {frame_idx},
                     })
-                    used_groups.add(len(groups) - 1)
+                    used_tracks.add(len(tracks) - 1)
 
-        groups.sort(key=lambda group: tuple(np.round(group["centroid"], 6)))
+        tracks = [
+            track for track in tracks
+            if len(track["frame_indices"]) >= required_frames
+        ]
+        tracks.sort(key=lambda track: tuple(np.round(track["centroid"], 6)))
+
         merged_clusters = []
-        for group in groups:
-            merged_points = np.vstack(group["point_sets"])
+        for track in tracks:
+            merged_points = np.vstack(track["point_sets"])
             merged_cluster = self._to_pcd(merged_points)
             if self.voxel_size > 0.0 and len(merged_cluster.points) > 0:
                 merged_cluster = merged_cluster.voxel_down_sample(self.voxel_size)
@@ -353,6 +397,11 @@ class SamRgbdCubeDetectionPipeline:
                 pass
             if len(merged_cluster.points) >= min_cluster_points:
                 merged_clusters.append(merged_cluster)
+
+        print(
+            "SAM temporal consistency: "
+            f"kept={len(merged_clusters)} tracks with min_frames={required_frames}/{len(candidate_frames)}"
+        )
         return merged_clusters
 
     def _build_cluster_boxes(self,
@@ -496,8 +545,8 @@ class SamRgbdCubeDetectionPipeline:
             for rgb_msg, depth_msg, camera_info_msg in frames
         ]
         last_frame_data = frame_data_list[-1]
-        estimation_clusters = self._merge_cluster_frames(
-            [frame_data.clusters for frame_data in frame_data_list]
+        estimation_clusters = self._merge_candidate_frames(
+            [frame_data.candidates for frame_data in frame_data_list]
         )
         return self._build_result(
             last_frame_data,

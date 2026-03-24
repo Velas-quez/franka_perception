@@ -118,6 +118,7 @@ class PerceptionParams:
     sam_max_cluster_extent_multiplier: float
     sam_max_cluster_volume_multiplier: float
     n_stack_cube_cloud: int
+    sam_batch_consistency_ratio: float
 
     # SAM debug visualization.
     sam_show_windows: bool
@@ -217,6 +218,8 @@ def load_params(ns: str = "~") -> PerceptionParams:
         sam_max_cluster_volume_multiplier=float(
             _p("sam_max_cluster_volume_multiplier", 7.0)),
         n_stack_cube_cloud=max(1, int(_p("n_stack_cube_cloud", 1))),
+        sam_batch_consistency_ratio=min(
+            1.0, max(0.0, float(_p("sam_batch_consistency_ratio", 0.5)))),
 
         # SAM debug visualization.
         sam_show_windows=bool(_p("sam_show_windows", True)),

@@ -88,6 +88,7 @@ class SingleCloudNode:
                 sam_max_cluster_volume_multiplier=self.params.sam_max_cluster_volume_multiplier,
                 support_plane_constraint=self.params.support_plane_constraint,
                 n_stack_cube_cloud=self.params.n_stack_cube_cloud,
+                sam_batch_consistency_ratio=self.params.sam_batch_consistency_ratio,
             )
         else:
             self.pipeline = CubeDetectionPipeline(
