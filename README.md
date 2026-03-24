@@ -1,3 +1,22 @@
+
+roslaunch franka_perception_thiago dynamic_listener.launch enviroment:=atena n_stack_cube_cloud:=4
+pip install --force-reinstall --no-cache-dir open3d
+python3 -m pip install -e "src/local_src/my_package/franka_perception-master/franka_perception-master[sam]"
+python3 -m pip install -e src/local_src/my_package/franka_perception-master/franka_perception-master
+pip install open3d
+rosdep install --from-paths src --ignore-src -r -y
+
+roslaunch zed_wrapper zed2i.launch
+
+roslaunch zed_wrapper zed2i.launch \
+    camera_name:=zed2 \
+    node_name:=zed_node \
+    confidence:=50 \
+    texture_confidence:=10 \
+    depth_stabilization:=1
+
+roslaunch panda_moveit_config franka_control.launch robot_ip:=10.10.10.10
+
 # franka_perception
 
 ROS pipeline for 3D perception with ZED cameras, focused on cube detection and pose estimation for Franka.
