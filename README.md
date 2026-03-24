@@ -54,6 +54,7 @@ source devel/setup.bash
 - `support_plane_constraint`: `fix_icp|ajust|none` (default `fix_icp`; constrain during ICP, adjust only after ICP, or disable support-plane handling)
 - `rgbd_flip`: `true|false` (default `false`; keep `false` when using TF to world)
 - `enviroment`: `poseidon|atena|simulation`
+- `enable_tracking`: `true|false` (default `false`; publish persistent tracked IDs on dedicated topics)
 
 ### `dynamic_listener.launch`
 - `pipeline_mode`: `classic|sam_rgbd`
@@ -124,3 +125,6 @@ roslaunch franka_perception dynamic_listener.launch \
 - `~cube_poses` (`geometry_msgs/PoseArray`)
 - `~cube_markers` (`visualization_msgs/MarkerArray`)
 - `~reconstructed_cloud` (`sensor_msgs/PointCloud2`) - nuvem reconstruida a partir de RGB-D
+- `~tracked_cubes` (`franka_perception_thiago/TrackedCubeArray`) when `enable_tracking:=true`
+- `~tracked_cube_markers` (`visualization_msgs/MarkerArray`) when `enable_tracking:=true`
+- `~tracked_cube_labels` (`visualization_msgs/MarkerArray`) when `enable_tracking:=true`

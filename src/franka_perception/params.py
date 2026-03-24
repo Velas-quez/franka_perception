@@ -58,6 +58,7 @@ class PerceptionParams:
     use_rgbd: bool
     pipeline_mode: str
     target_frame: str
+    enable_tracking: bool
 
     # Input topics (resolved from enviroment, with optional ROS param overrides).
     cloud_topic: str
@@ -119,6 +120,14 @@ class PerceptionParams:
     sam_show_windows: bool
     sam_window_wait_ms: int
 
+    # Temporal tracking configuration.
+    tracking_max_match_distance: float
+    tracking_max_missed_frames: int
+    tracking_mask_max_distance: float
+    tracking_position_weight: float
+    tracking_mask_weight: float
+    tracking_velocity_alpha: float
+
 
 def load_params(ns: str = "~") -> PerceptionParams:
     """Load parameters with defaults."""
@@ -141,6 +150,7 @@ def load_params(ns: str = "~") -> PerceptionParams:
         use_rgbd=bool(_p("use_rgbd", False)),
         pipeline_mode=_p("pipeline_mode", "classic"),
         target_frame=_p("target_frame", "world"),
+        enable_tracking=bool(_p("enable_tracking", False)),
 
         # Input topics (resolved by enviroment, overridable via ROS params).
         cloud_topic=_p("cloud_topic", topic_defaults["cloud_topic"]),
@@ -205,4 +215,12 @@ def load_params(ns: str = "~") -> PerceptionParams:
         # SAM debug visualization.
         sam_show_windows=bool(_p("sam_show_windows", True)),
         sam_window_wait_ms=int(_p("sam_window_wait_ms", 1)),
+
+        # Temporal tracking configuration.
+        tracking_max_match_distance=float(_p("tracking_max_match_distance", 0.06)),
+        tracking_max_missed_frames=int(_p("tracking_max_missed_frames", 5)),
+        tracking_mask_max_distance=float(_p("tracking_mask_max_distance", 120.0)),
+        tracking_position_weight=float(_p("tracking_position_weight", 1.0)),
+        tracking_mask_weight=float(_p("tracking_mask_weight", 0.2)),
+        tracking_velocity_alpha=float(_p("tracking_velocity_alpha", 0.6)),
     )

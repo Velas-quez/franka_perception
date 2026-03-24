@@ -3,7 +3,7 @@
 
 import copy
 import threading
-from typing import Iterable, List, Optional, Tuple
+from typing import Iterable, List, Optional, Sequence, Tuple
 
 import numpy as np
 import rospy
@@ -16,12 +16,21 @@ from sensor_msgs.msg import CameraInfo, Image, PointCloud2
 from std_msgs.msg import Header
 from visualization_msgs.msg import MarkerArray
 
+from franka_perception_thiago.msg import TrackedCubeArray
 from franka_perception.core.cloud_io import msg_to_xyz, has_points, rgbd_msgs_to_xyz
+from franka_perception.core.publishers import (
+    publish_markers,
+    publish_point_clouds,
+    publish_poses,
+    publish_tracked_cubes,
+    publish_tracked_labels,
+    publish_tracked_markers,
+)
+from franka_perception.geometry.cube_fitting import CubeEstimate
 from franka_perception.params import load_params
 from franka_perception.pipelines.pipeline import CubeDetectionPipeline
 from franka_perception.pipelines.sam_rgbd_pipeline import SamRgbdCubeDetectionPipeline
-from franka_perception.core.publishers import publish_markers, publish_poses, publish_point_clouds
-from franka_perception.geometry.cube_fitting import CubeEstimate
+from franka_perception.tracking.cube_tracker import CubeTracker, DetectionObservation
 
 
 class DynamicListenerNode:
@@ -37,6 +46,7 @@ class DynamicListenerNode:
         self._target_rgbd_frames = (
             self.params.n_stack_cube_cloud if self.pipeline_mode == "sam_rgbd" else 1
         )
+        self.enable_tracking = bool(self.params.enable_tracking)
 
         self.pipeline = None
         self.sam_pipeline = None
@@ -90,6 +100,19 @@ class DynamicListenerNode:
                 below_plane_tolerance=self.params.below_plane_tolerance,
                 support_plane_constraint=self.params.support_plane_constraint,
             )
+
+        self._tracker = None
+        self._tracking_frame_id: Optional[str] = None
+        if self.enable_tracking:
+            self._tracker = CubeTracker(
+                max_match_distance=self.params.tracking_max_match_distance,
+                max_missed_frames=self.params.tracking_max_missed_frames,
+                mask_max_distance=self.params.tracking_mask_max_distance,
+                position_weight=self.params.tracking_position_weight,
+                mask_weight=self.params.tracking_mask_weight,
+                velocity_alpha=self.params.tracking_velocity_alpha,
+            )
+
         self._points: Optional[np.ndarray] = None
         self._rgb_msg: Optional[Image] = None
         self._depth_msg: Optional[Image] = None
@@ -105,7 +128,14 @@ class DynamicListenerNode:
         self._pose_pub = rospy.Publisher("~cube_poses", PoseArray, queue_size=5)
         self._marker_pub = rospy.Publisher("~cube_markers", MarkerArray, queue_size=5)
         self._reconstructed_cloud_pub = rospy.Publisher("~reconstructed_cloud", PointCloud2, queue_size=1)
-        self._cloud_pubs = {}  # Dictionary to store publishers for each cube's point cloud
+        self._tracked_pub = None
+        self._tracked_marker_pub = None
+        self._tracked_label_pub = None
+        if self.enable_tracking:
+            self._tracked_pub = rospy.Publisher("~tracked_cubes", TrackedCubeArray, queue_size=5)
+            self._tracked_marker_pub = rospy.Publisher("~tracked_cube_markers", MarkerArray, queue_size=5)
+            self._tracked_label_pub = rospy.Publisher("~tracked_cube_labels", MarkerArray, queue_size=5)
+        self._cloud_pubs = {}
 
         self._cloud_sub = None
         self._rgb_sub = None
@@ -120,14 +150,23 @@ class DynamicListenerNode:
             self._sync = message_filters.ApproximateTimeSynchronizer(
                 [self._rgb_sub, self._depth_sub, self._info_sub], queue_size=5, slop=0.2)
             self._sync.registerCallback(self._rgbd_cb)
-            rospy.loginfo("Listening for RGB-D on %s + %s + %s (mode=%s, batch_frames=%d)",
-                          self.params.rgb_topic, self.params.depth_topic,
-                          self.params.camera_info_topic, self.pipeline_mode,
-                          self._target_rgbd_frames)
+            rospy.loginfo(
+                "Listening for RGB-D on %s + %s + %s (mode=%s, batch_frames=%d, tracking=%s)",
+                self.params.rgb_topic,
+                self.params.depth_topic,
+                self.params.camera_info_topic,
+                self.pipeline_mode,
+                self._target_rgbd_frames,
+                self.enable_tracking,
+            )
         else:
             self._cloud_sub = rospy.Subscriber(
                 self.params.cloud_topic, PointCloud2, self._cloud_cb, queue_size=1)
-            rospy.loginfo("Listening for point clouds on %s", self.params.cloud_topic)
+            rospy.loginfo(
+                "Listening for point clouds on %s (tracking=%s)",
+                self.params.cloud_topic,
+                self.enable_tracking,
+            )
 
     def _cloud_cb(self, msg: PointCloud2) -> None:
         if self._cloud_ready.is_set():
@@ -236,6 +275,9 @@ class DynamicListenerNode:
                         stop_after="all",
                     )
                     header = frame_header
+                    info_msg = frame_info_msg
+                    rgb_msg = frame_rgb_msg
+                    depth_msg = frame_depth_msg
 
                 if result is None:
                     rospy.logwarn("SAM batch processing did not produce a result; waiting for next")
@@ -246,42 +288,174 @@ class DynamicListenerNode:
                     continue
                 result = self.pipeline.process(points)
 
-            cubes_base, header_base = self._transform_cubes_to_target(result.cubes, header)
+            source_cubes = list(result.cubes)
+            cubes_base, header_base = self._transform_cubes_to_target(source_cubes, header)
+            cubes_base = list(cubes_base)
+
             publish_poses(cubes_base, header_base, self.params.cube_side_length, self._pose_pub)
             publish_markers(cubes_base, header_base, self.params.cube_side_length, self._marker_pub)
             self._publish_cube_point_clouds(cubes_base, header_base)
+
+            if self.enable_tracking:
+                observations = self._build_tracking_observations(
+                    source_cubes,
+                    cubes_base,
+                    result.sam_masks,
+                    info_msg,
+                )
+                tracked_cubes = self._update_tracker(observations, header_base)
+                publish_tracked_cubes(tracked_cubes, header_base, self._tracked_pub)
+                publish_tracked_markers(
+                    tracked_cubes,
+                    header_base,
+                    self.params.cube_side_length,
+                    self._tracked_marker_pub,
+                )
+                publish_tracked_labels(
+                    tracked_cubes,
+                    header_base,
+                    self.params.cube_side_length,
+                    self._tracked_label_pub,
+                )
+
+    def _build_tracking_observations(self,
+                                     source_cubes: Sequence[CubeEstimate],
+                                     transformed_cubes: Sequence[CubeEstimate],
+                                     sam_masks,
+                                     camera_info_msg: Optional[CameraInfo]) -> List[DetectionObservation]:
+        mask_centroids = self._associate_masks_to_cubes(source_cubes, sam_masks, camera_info_msg)
+        observations = []
+        for cube, mask_centroid in zip(transformed_cubes, mask_centroids):
+            observations.append(DetectionObservation(cube=cube, mask_centroid=mask_centroid))
+        return observations
+
+    def _associate_masks_to_cubes(self,
+                                  cubes: Sequence[CubeEstimate],
+                                  sam_masks,
+                                  camera_info_msg: Optional[CameraInfo]) -> List[Optional[np.ndarray]]:
+        if not cubes:
+            return []
+        if camera_info_msg is None or not sam_masks or self.params.rgbd_flip:
+            return [None] * len(cubes)
+
+        mask_centroids = []
+        for mask in sam_masks:
+            centroid = self._mask_centroid(mask)
+            if centroid is not None:
+                mask_centroids.append(centroid)
+        if not mask_centroids:
+            return [None] * len(cubes)
+
+        candidate_pairs = []
+        for cube_idx, cube in enumerate(cubes):
+            pixel = self._project_cube_center(cube, camera_info_msg)
+            if pixel is None:
+                continue
+            for mask_idx, centroid in enumerate(mask_centroids):
+                distance = float(np.linalg.norm(pixel - centroid))
+                if distance <= float(self.params.tracking_mask_max_distance):
+                    candidate_pairs.append((distance, cube_idx, mask_idx))
+
+        assignments: List[Optional[np.ndarray]] = [None] * len(cubes)
+        used_cubes = set()
+        used_masks = set()
+        for _, cube_idx, mask_idx in sorted(candidate_pairs, key=lambda item: item[0]):
+            if cube_idx in used_cubes or mask_idx in used_masks:
+                continue
+            assignments[cube_idx] = mask_centroids[mask_idx]
+            used_cubes.add(cube_idx)
+            used_masks.add(mask_idx)
+        return assignments
+
+    @staticmethod
+    def _mask_centroid(mask) -> Optional[np.ndarray]:
+        mask_array = np.asarray(mask, dtype=bool)
+        ys, xs = np.nonzero(mask_array)
+        if xs.size == 0:
+            return None
+        return np.array([float(np.mean(xs)), float(np.mean(ys))], dtype=float)
+
+    @staticmethod
+    def _project_cube_center(cube: CubeEstimate,
+                             camera_info_msg: CameraInfo) -> Optional[np.ndarray]:
+        center = np.asarray(cube.transform[:3, 3], dtype=float)
+        z = float(center[2])
+        if not np.isfinite(z) or z <= 1e-6:
+            return None
+
+        K = np.asarray(camera_info_msg.K, dtype=float).reshape(3, 3)
+        fx = float(K[0, 0])
+        fy = float(K[1, 1])
+        cx = float(K[0, 2])
+        cy = float(K[1, 2])
+        if fx <= 0.0 or fy <= 0.0:
+            return None
+
+        u = fx * float(center[0]) / z + cx
+        v = fy * float(center[1]) / z + cy
+        if not (np.isfinite(u) and np.isfinite(v)):
+            return None
+
+        width = int(getattr(camera_info_msg, "width", 0) or 0)
+        height = int(getattr(camera_info_msg, "height", 0) or 0)
+        if width > 0 and height > 0 and (u < 0.0 or u >= width or v < 0.0 or v >= height):
+            return None
+        return np.array([u, v], dtype=float)
+
+    def _update_tracker(self,
+                        observations: Sequence[DetectionObservation],
+                        header: Optional[Header]):
+        if self._tracker is None:
+            return []
+
+        frame_id = header.frame_id if header is not None else None
+        if frame_id:
+            if self._tracking_frame_id is None:
+                self._tracking_frame_id = frame_id
+            elif frame_id != self._tracking_frame_id:
+                rospy.logwarn(
+                    "Tracking frame changed from %s to %s; resetting tracker.",
+                    self._tracking_frame_id,
+                    frame_id,
+                )
+                self._tracker.reset()
+                self._tracking_frame_id = frame_id
+
+        timestamp = None
+        if header is not None:
+            try:
+                timestamp = float(header.stamp.to_sec())
+            except AttributeError:
+                timestamp = None
+        return self._tracker.update(observations, timestamp=timestamp)
 
     def _publish_cube_point_clouds(self,
                                    cubes: Iterable[CubeEstimate],
                                    header: Optional[Header]):
         """Publish point clouds sampled from each detected cube."""
         cubes_list = list(cubes)
-        
-        # Create publishers for new cubes and clean up old ones
+
         active_cube_indices = set(range(len(cubes_list)))
         inactive_indices = set(self._cloud_pubs.keys()) - active_cube_indices
-        
         for idx in inactive_indices:
             if idx in self._cloud_pubs:
                 del self._cloud_pubs[idx]
-        
-        # Create publishers for new cubes if needed
+
         for idx in active_cube_indices:
             if idx not in self._cloud_pubs:
                 pub_name = f"~cube_cloud_{idx}"
                 self._cloud_pubs[idx] = rospy.Publisher(pub_name, PointCloud2, queue_size=5)
-                rospy.loginfo(f"Created publisher for {pub_name}")
-        
-        # Publish point clouds for each cube
+                rospy.loginfo("Created publisher for %s", pub_name)
+
         for idx, cube in enumerate(cubes_list):
             if idx in self._cloud_pubs:
-                publish_point_clouds([cube], header, num_samples=1500, 
-                                   publisher=self._cloud_pubs[idx])
+                publish_point_clouds([cube], header, num_samples=1500,
+                                     publisher=self._cloud_pubs[idx])
 
     def _transform_cubes_to_target(self,
                                    cubes: Iterable[CubeEstimate],
                                    header: Optional[Header]):
-        """Transform estimated cube poses to target frame only"""
+        """Transform estimated cube poses to target frame only."""
         target_frame = self.params.target_frame
         if header is None or target_frame is None:
             return cubes, header
@@ -306,7 +480,6 @@ class DynamicListenerNode:
         transformed = []
         for cube in cubes:
             new_T = T @ cube.transform
-            # Transform mesh to target frame
             transformed_mesh = copy.deepcopy(cube.mesh)
             transformed_mesh.transform(T)
             transformed.append(
@@ -314,6 +487,7 @@ class DynamicListenerNode:
                     transform=new_T,
                     mesh=transformed_mesh,
                     initial_mesh=cube.initial_mesh,
+                    icp_fitness=cube.icp_fitness,
                 )
             )
 

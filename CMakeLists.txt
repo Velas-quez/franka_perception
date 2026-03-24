@@ -10,9 +10,11 @@ project(franka_perception_thiago)
 find_package(catkin REQUIRED COMPONENTS
   cv_bridge
   geometry_msgs
+  message_generation
   message_filters
   rospy
   sensor_msgs
+  std_msgs
   tf
   tf2_ros
   visualization_msgs
@@ -51,12 +53,11 @@ catkin_python_setup()
 ##   * uncomment the generate_messages entry below
 ##   * add every package in MSG_DEP_SET to generate_messages(DEPENDENCIES ...)
 
-## Generate messages in the 'msg' folder
-# add_message_files(
-#   FILES
-#   Message1.msg
-#   Message2.msg
-# )
+add_message_files(
+  FILES
+  TrackedCube.msg
+  TrackedCubeArray.msg
+)
 
 ## Generate services in the 'srv' folder
 # add_service_files(
@@ -72,11 +73,11 @@ catkin_python_setup()
 #   Action2.action
 # )
 
-## Generate added messages and services with any dependencies listed here
-# generate_messages(
-#   DEPENDENCIES
-#   geometry_msgs#   sensor_msgs
-# )
+generate_messages(
+  DEPENDENCIES
+  geometry_msgs
+  std_msgs
+)
 
 ################################################
 ## Declare ROS dynamic reconfigure parameters ##
@@ -110,7 +111,7 @@ catkin_python_setup()
 catkin_package(
 #  INCLUDE_DIRS include
 #  LIBRARIES franka_perception
-#  CATKIN_DEPENDS cv_bridge geometry_msgs message_filters rospy sensor_msgs tf2_ros
+  CATKIN_DEPENDS cv_bridge geometry_msgs message_filters message_runtime rospy sensor_msgs std_msgs tf tf2_ros visualization_msgs
 #  DEPENDS system_lib
 )
 

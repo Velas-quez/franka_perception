@@ -8,6 +8,7 @@
   <arg name="rgbd_flip" default="false" doc="Flip RGB-D cloud axes for Open3D-style visualization only" />
   <arg name="n_stack_cube_cloud" default="1" doc="Fuse this many consecutive SAM-masked cube clouds before estimating cube poses" />
   <arg name="target_frame" default="world" doc="Optional output frame. Use 'none' to disables TF conversion." />
+  <arg name="enable_tracking" default="false" doc="Enable persistent 3D+2D cube tracking and tracked topics" />
   <arg name="enviroment" default="simulation" doc="poseidon|atena|simulation (defines the input topics)" />
 
   <node pkg="franka_perception_thiago" type="dynamic_listener_node.py" name="listener" output="screen">
@@ -20,6 +21,7 @@
     <param name="sam_checkpoint_path"  value="$(arg sam_checkpoint_path)" />
     <param name="sam_prompt_text"      value="$(arg sam_prompt_text)" />
     <param name="target_frame"         value="$(arg target_frame)" />
+    <param name="enable_tracking"      value="$(arg enable_tracking)" />
     <param name="enviroment"           value="$(arg enviroment)" />
   </node>
 </launch>
