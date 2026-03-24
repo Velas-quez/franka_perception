@@ -260,28 +260,20 @@ class DynamicListenerNode:
                     rospy.logwarn("No valid synchronized RGB-D batch received; waiting for next")
                     continue
                 depth_scale = self.params.depth_scale if self.params.depth_scale > 0.0 else None
-                self.sam_pipeline.reset_stack_history()
-                result = None
-                batch_size = len(rgbd_frames)
-                for frame_idx, (frame_rgb_msg, frame_depth_msg, frame_info_msg, frame_header) in enumerate(rgbd_frames, start=1):
-                    rospy.loginfo("Processing SAM batch frame %d/%d", frame_idx, batch_size)
-                    result = self.sam_pipeline.process(
-                        frame_rgb_msg,
-                        frame_depth_msg,
-                        frame_info_msg,
-                        depth_scale=depth_scale,
-                        depth_trunc=self.params.depth_trunc,
-                        flip=self.params.rgbd_flip,
-                        stop_after="all",
-                    )
-                    header = frame_header
-                    info_msg = frame_info_msg
-                    rgb_msg = frame_rgb_msg
-                    depth_msg = frame_depth_msg
-
-                if result is None:
-                    rospy.logwarn("SAM batch processing did not produce a result; waiting for next")
-                    continue
+                rospy.loginfo("Processing SAM batch with %d frames", len(rgbd_frames))
+                batch_frames = [
+                    (frame_rgb_msg, frame_depth_msg, frame_info_msg)
+                    for frame_rgb_msg, frame_depth_msg, frame_info_msg, _ in rgbd_frames
+                ]
+                result = self.sam_pipeline.process_batch(
+                    batch_frames,
+                    depth_scale=depth_scale,
+                    depth_trunc=self.params.depth_trunc,
+                    flip=self.params.rgbd_flip,
+                    stop_after="all",
+                )
+                header = rgbd_frames[-1][3]
+                info_msg = rgbd_frames[-1][2]
             else:
                 if not has_points(points):
                     rospy.logwarn("No valid point cloud received; waiting for next")

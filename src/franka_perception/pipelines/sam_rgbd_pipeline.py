@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """RGB-D cube pipeline that uses SAM masks as pre-clustered cube candidates."""
 
-from collections import deque
-from typing import Deque, List, Optional, Tuple
+from dataclasses import dataclass
+from typing import List, Optional, Sequence, Tuple
 
 import numpy as np
 import open3d as o3d
@@ -13,6 +13,18 @@ from ..core.cloud_io import depth_to_xyz, rgbd_msgs_to_numpy
 from ..geometry.cube_fitting import CubeEstimate, fit_cubes_in_cluster, select_best_cubes
 from ..geometry.sam_masking import SamSegmenter, erode_mask, select_mask_candidates
 from ..render.sam_visualization import build_mask_overlay
+
+
+@dataclass
+class _SamFrameData:
+    original_cloud: o3d.geometry.PointCloud
+    plane_model: Optional[np.ndarray]
+    plane_inliers: Optional[np.ndarray]
+    plane_inlier_cloud: Optional[o3d.geometry.PointCloud]
+    rgb_image: np.ndarray
+    viz_masks: List[np.ndarray]
+    dino_boxes: np.ndarray
+    clusters: List[o3d.geometry.PointCloud]
 
 
 class SamRgbdCubeDetectionPipeline:
@@ -72,7 +84,6 @@ class SamRgbdCubeDetectionPipeline:
         self.sam_max_cluster_volume_multiplier = sam_max_cluster_volume_multiplier
         self.support_plane_constraint = support_plane_constraint
         self.n_stack_cube_cloud = max(1, int(n_stack_cube_cloud))
-        self._stacked_cluster_history: Deque[List[Tuple[np.ndarray, np.ndarray]]] = deque()
         self.segmenter = SamSegmenter(
             mode=sam_mode,
             checkpoint_path=sam_checkpoint_path,
@@ -115,128 +126,14 @@ class SamRgbdCubeDetectionPipeline:
     def _cluster_centroid(points: np.ndarray) -> np.ndarray:
         return np.mean(points, axis=0, dtype=np.float64)
 
-    def _match_historical_clusters(self,
-                                   current_centroids: List[np.ndarray],
-                                   historical_frame: List[Tuple[np.ndarray, np.ndarray]],
-                                   max_centroid_distance: float) -> List[Optional[np.ndarray]]:
-        matches: List[Optional[np.ndarray]] = [None] * len(current_centroids)
-        if not historical_frame:
-            return matches
-
-        candidate_pairs = []
-        for current_idx, current_centroid in enumerate(current_centroids):
-            for history_idx, (history_points, history_centroid) in enumerate(historical_frame):
-                if history_points.size == 0:
-                    continue
-                distance = float(np.linalg.norm(current_centroid - history_centroid))
-                if distance <= max_centroid_distance:
-                    candidate_pairs.append((distance, current_idx, history_idx))
-
-        if not candidate_pairs:
-            return matches
-
-        candidate_pairs.sort(key=lambda item: item[0])
-        used_currents = set()
-        used_history = set()
-        for _, current_idx, history_idx in candidate_pairs:
-            if current_idx in used_currents or history_idx in used_history:
-                continue
-            matches[current_idx] = historical_frame[history_idx][0]
-            used_currents.add(current_idx)
-            used_history.add(history_idx)
-        return matches
-
-    def _fuse_clusters_with_history(self,
-                                    clusters: List[o3d.geometry.PointCloud]) -> List[o3d.geometry.PointCloud]:
-        if (
-            self.n_stack_cube_cloud <= 1
-            or not clusters
-            or not self._stacked_cluster_history
-        ):
-            return clusters
-
-        current_points = [self._cluster_points(cluster) for cluster in clusters]
-        current_centroids = [self._cluster_centroid(points) for points in current_points]
-        fused_point_sets = [[points] for points in current_points]
-        max_centroid_distance = max(
-            float(self.cube_side_length) * 0.75,
-            float(self.voxel_size) * 4.0,
-        )
-
-        for historical_frame in self._stacked_cluster_history:
-            matches = self._match_historical_clusters(
-                current_centroids,
-                historical_frame,
-                max_centroid_distance,
-            )
-            for cluster_idx, history_points in enumerate(matches):
-                if history_points is not None and history_points.size > 0:
-                    fused_point_sets[cluster_idx].append(history_points)
-
-        fused_clusters = []
-        min_cluster_points = max(1, int(self.sam_min_points_per_cluster))
-        for cluster, point_set in zip(clusters, fused_point_sets):
-            fused_points = np.vstack(point_set)
-            fused_cluster = self._to_pcd(fused_points)
-            if self.voxel_size > 0.0 and len(fused_cluster.points) > 0:
-                fused_cluster = fused_cluster.voxel_down_sample(self.voxel_size)
-            try:
-                fused_cluster, _ = fused_cluster.remove_statistical_outlier(
-                    nb_neighbors=20, std_ratio=2.0)
-            except RuntimeError:
-                pass
-            if len(fused_cluster.points) < min_cluster_points:
-                fused_clusters.append(cluster)
-            else:
-                fused_clusters.append(fused_cluster)
-        return fused_clusters
-
-    def _build_cluster_boxes(self,
-                             clusters: List[o3d.geometry.PointCloud]) -> List[o3d.geometry.OrientedBoundingBox]:
-        boxes = []
-        for cluster in clusters:
-            if len(cluster.points) == 0:
-                continue
-            box = cluster.get_oriented_bounding_box()
-            box.color = (0.0, 1.0, 0.0)
-            boxes.append(box)
-        return boxes
-
-    def reset_stack_history(self) -> None:
-        self._stacked_cluster_history.clear()
-
-    def _update_cluster_history(self, clusters: List[o3d.geometry.PointCloud]) -> None:
-        if self.n_stack_cube_cloud <= 1:
-            self._stacked_cluster_history.clear()
-            return
-
-        history_frame = []
-        for cluster in clusters:
-            points = self._cluster_points(cluster)
-            if points.size == 0:
-                continue
-            history_frame.append((points, self._cluster_centroid(points)))
-        self._stacked_cluster_history.append(history_frame)
-
-        max_history = self.n_stack_cube_cloud - 1
-        while len(self._stacked_cluster_history) > max_history:
-            self._stacked_cluster_history.popleft()
-
-    def process(self,
-                rgb_msg,
-                depth_msg,
-                camera_info_msg,
-                *,
-                depth_scale: Optional[float] = None,
-                depth_trunc: float = 3.0,
-                flip: bool = True,
-                stop_after: str = "all") -> CubeDetectionResult:
-        """Run SAM-first RGB-D pipeline up to the selected stage."""
-        stage = stop_after.lower()
-        if stage not in {"none", "filter", "cluster", "all"}:
-            raise ValueError(f"Invalid stop_after '{stop_after}'. "
-                             "Choose from: none, filter, cluster, all.")
-
+    def _build_none_result(self,
+                           rgb_msg,
+                           depth_msg,
+                           camera_info_msg,
+                           *,
+                           depth_scale: Optional[float],
+                           depth_trunc: float,
+                           flip: bool) -> CubeDetectionResult:
         rgb_image, depth_m = rgbd_msgs_to_numpy(
             rgb_msg, depth_msg, depth_scale=depth_scale)
         original_points = depth_to_xyz(
@@ -246,23 +143,40 @@ class SamRgbdCubeDetectionPipeline:
             flip=flip,
         )
         original_cloud = self._to_pcd(original_points)
-        if stage == "none":
-            return CubeDetectionResult(
-                original_cloud=original_cloud,
-                filtered_cloud=original_cloud,
-                masked_cloud=None,
-                cluster_boxes=[],
-                plane_obbs=[],
-                cubes=[],
-                failed_initial_meshes=[],
-                plane_model=None,
-                plane_inlier_indices=None,
-                plane_inlier_cloud=None,
-                sam_rgb_image=rgb_image,
-                sam_masks=[],
-                sam_dino_boxes=np.zeros((0, 4), dtype=np.float32),
-                sam_overlay=None,
-            )
+        return CubeDetectionResult(
+            original_cloud=original_cloud,
+            filtered_cloud=original_cloud,
+            masked_cloud=None,
+            cluster_boxes=[],
+            plane_obbs=[],
+            cubes=[],
+            failed_initial_meshes=[],
+            plane_model=None,
+            plane_inlier_indices=None,
+            plane_inlier_cloud=None,
+            sam_rgb_image=rgb_image,
+            sam_masks=[],
+            sam_dino_boxes=np.zeros((0, 4), dtype=np.float32),
+            sam_overlay=None,
+        )
+
+    def _extract_frame_data(self,
+                            rgb_msg,
+                            depth_msg,
+                            camera_info_msg,
+                            *,
+                            depth_scale: Optional[float],
+                            depth_trunc: float,
+                            flip: bool) -> _SamFrameData:
+        rgb_image, depth_m = rgbd_msgs_to_numpy(
+            rgb_msg, depth_msg, depth_scale=depth_scale)
+        original_points = depth_to_xyz(
+            depth_m,
+            camera_info_msg,
+            depth_trunc=depth_trunc,
+            flip=flip,
+        )
+        original_cloud = self._to_pcd(original_points)
 
         plane_model = None
         plane_inliers = None
@@ -334,7 +248,6 @@ class SamRgbdCubeDetectionPipeline:
                     if p95_height < float(self.sam_min_mask_plane_height):
                         print(f"Rejecting SAM mask by low height p95={p95_height:.4f}m")
                         continue
-                    # Remove table/plane points from accepted masks.
                     points = points[distances >= float(self.sam_near_plane_distance)]
                     if points.shape[0] < self.sam_min_points_per_cluster:
                         continue
@@ -345,7 +258,6 @@ class SamRgbdCubeDetectionPipeline:
             if len(cluster.points) < self.sam_min_points_per_cluster:
                 continue
 
-            # Light denoising on each mask-cluster, not global cloud filtering.
             try:
                 cluster, _ = cluster.remove_statistical_outlier(
                     nb_neighbors=20, std_ratio=2.0)
@@ -371,48 +283,135 @@ class SamRgbdCubeDetectionPipeline:
 
             clusters.append(cluster)
 
-        estimation_clusters = self._fuse_clusters_with_history(clusters)
+        return _SamFrameData(
+            original_cloud=original_cloud,
+            plane_model=plane_model,
+            plane_inliers=plane_inliers,
+            plane_inlier_cloud=plane_inlier_cloud,
+            rgb_image=rgb_image,
+            viz_masks=viz_masks,
+            dino_boxes=dino_boxes,
+            clusters=clusters,
+        )
+
+    def _merge_cluster_frames(self,
+                              cluster_frames: Sequence[List[o3d.geometry.PointCloud]]) -> List[o3d.geometry.PointCloud]:
+        if not cluster_frames:
+            return []
+
+        max_centroid_distance = max(
+            float(self.cube_side_length) * 0.75,
+            float(self.voxel_size) * 4.0,
+        )
+        min_cluster_points = max(1, int(self.sam_min_points_per_cluster))
+        groups = []
+
+        for frame_clusters in cluster_frames:
+            used_groups = set()
+            for cluster in frame_clusters:
+                points = self._cluster_points(cluster)
+                if points.size == 0:
+                    continue
+                centroid = self._cluster_centroid(points)
+                best_group_idx = None
+                best_distance = float("inf")
+                for group_idx, group in enumerate(groups):
+                    if group_idx in used_groups:
+                        continue
+                    distance = float(np.linalg.norm(centroid - group["centroid"]))
+                    if distance < best_distance:
+                        best_distance = distance
+                        best_group_idx = group_idx
+
+                if best_group_idx is not None and best_distance <= max_centroid_distance:
+                    group = groups[best_group_idx]
+                    group["point_sets"].append(points)
+                    group["count"] += 1
+                    group["centroid"] = group["centroid"] + (
+                        centroid - group["centroid"]
+                    ) / float(group["count"])
+                    used_groups.add(best_group_idx)
+                else:
+                    groups.append({
+                        "point_sets": [points],
+                        "centroid": centroid.copy(),
+                        "count": 1,
+                    })
+                    used_groups.add(len(groups) - 1)
+
+        groups.sort(key=lambda group: tuple(np.round(group["centroid"], 6)))
+        merged_clusters = []
+        for group in groups:
+            merged_points = np.vstack(group["point_sets"])
+            merged_cluster = self._to_pcd(merged_points)
+            if self.voxel_size > 0.0 and len(merged_cluster.points) > 0:
+                merged_cluster = merged_cluster.voxel_down_sample(self.voxel_size)
+            try:
+                merged_cluster, _ = merged_cluster.remove_statistical_outlier(
+                    nb_neighbors=20, std_ratio=2.0)
+            except RuntimeError:
+                pass
+            if len(merged_cluster.points) >= min_cluster_points:
+                merged_clusters.append(merged_cluster)
+        return merged_clusters
+
+    def _build_cluster_boxes(self,
+                             clusters: List[o3d.geometry.PointCloud]) -> List[o3d.geometry.OrientedBoundingBox]:
+        boxes = []
+        for cluster in clusters:
+            if len(cluster.points) == 0:
+                continue
+            box = cluster.get_oriented_bounding_box()
+            box.color = (0.0, 1.0, 0.0)
+            boxes.append(box)
+        return boxes
+
+    def _build_result(self,
+                      frame_data: _SamFrameData,
+                      estimation_clusters: List[o3d.geometry.PointCloud],
+                      *,
+                      stop_after: str) -> CubeDetectionResult:
         cluster_cloud = self._merge_clouds(estimation_clusters)
-        cluster_boxes = self._build_cluster_boxes(estimation_clusters)
-        self._update_cluster_history(clusters)
-
         if len(cluster_cloud.points) == 0:
-            cluster_cloud = original_cloud
+            cluster_cloud = frame_data.original_cloud
+        cluster_boxes = self._build_cluster_boxes(estimation_clusters)
 
-        if stage == "filter":
+        if stop_after == "filter":
             return CubeDetectionResult(
-                original_cloud=original_cloud,
+                original_cloud=frame_data.original_cloud,
                 filtered_cloud=cluster_cloud,
                 masked_cloud=cluster_cloud,
                 cluster_boxes=[],
                 plane_obbs=[],
                 cubes=[],
                 failed_initial_meshes=[],
-                plane_model=plane_model,
-                plane_inlier_indices=plane_inliers,
-                plane_inlier_cloud=plane_inlier_cloud,
-                sam_rgb_image=rgb_image,
-                sam_masks=viz_masks,
-                sam_dino_boxes=dino_boxes,
-                sam_overlay=build_mask_overlay(rgb_image, viz_masks) if viz_masks else None,
+                plane_model=frame_data.plane_model,
+                plane_inlier_indices=frame_data.plane_inliers,
+                plane_inlier_cloud=frame_data.plane_inlier_cloud,
+                sam_rgb_image=frame_data.rgb_image,
+                sam_masks=frame_data.viz_masks,
+                sam_dino_boxes=frame_data.dino_boxes,
+                sam_overlay=build_mask_overlay(frame_data.rgb_image, frame_data.viz_masks)
+                if frame_data.viz_masks else None,
             )
 
-        if stage == "cluster":
+        if stop_after == "cluster":
             return CubeDetectionResult(
-                original_cloud=original_cloud,
+                original_cloud=frame_data.original_cloud,
                 filtered_cloud=cluster_cloud,
                 masked_cloud=cluster_cloud,
                 cluster_boxes=cluster_boxes,
                 plane_obbs=[],
                 cubes=[],
                 failed_initial_meshes=[],
-                plane_model=plane_model,
-                plane_inlier_indices=plane_inliers,
-                plane_inlier_cloud=plane_inlier_cloud,
-                sam_rgb_image=rgb_image,
-                sam_masks=viz_masks,
-                sam_dino_boxes=dino_boxes,
-                sam_overlay=build_mask_overlay(rgb_image, viz_masks) if viz_masks else None,
+                plane_model=frame_data.plane_model,
+                plane_inlier_indices=frame_data.plane_inliers,
+                plane_inlier_cloud=frame_data.plane_inlier_cloud,
+                sam_rgb_image=frame_data.rgb_image,
+                sam_masks=frame_data.viz_masks,
+                sam_dino_boxes=frame_data.dino_boxes,
+                sam_overlay=build_mask_overlay(frame_data.rgb_image, frame_data.viz_masks)
+                if frame_data.viz_masks else None,
             )
 
         plane_obbs = []
@@ -426,7 +425,7 @@ class SamRgbdCubeDetectionPipeline:
                 clearance=self.clearance,
                 plane_distance=0.0005,
                 plane_min_inliers=20,
-                support_plane_model=plane_model,
+                support_plane_model=frame_data.plane_model,
                 support_plane_constraint=self.support_plane_constraint,
             )
             cubes.extend(estimates)
@@ -443,18 +442,82 @@ class SamRgbdCubeDetectionPipeline:
             )
 
         return CubeDetectionResult(
-            original_cloud=original_cloud,
+            original_cloud=frame_data.original_cloud,
             filtered_cloud=cluster_cloud,
             masked_cloud=cluster_cloud,
             cluster_boxes=cluster_boxes,
             plane_obbs=plane_obbs,
             cubes=selected_cubes,
             failed_initial_meshes=failed_initial_meshes,
-            plane_model=plane_model,
-            plane_inlier_indices=plane_inliers,
-            plane_inlier_cloud=plane_inlier_cloud,
-            sam_rgb_image=rgb_image,
-            sam_masks=viz_masks,
-            sam_dino_boxes=dino_boxes,
-            sam_overlay=build_mask_overlay(rgb_image, viz_masks) if viz_masks else None,
+            plane_model=frame_data.plane_model,
+            plane_inlier_indices=frame_data.plane_inliers,
+            plane_inlier_cloud=frame_data.plane_inlier_cloud,
+            sam_rgb_image=frame_data.rgb_image,
+            sam_masks=frame_data.viz_masks,
+            sam_dino_boxes=frame_data.dino_boxes,
+            sam_overlay=build_mask_overlay(frame_data.rgb_image, frame_data.viz_masks)
+            if frame_data.viz_masks else None,
+        )
+
+    def process_batch(self,
+                      frames: Sequence[Tuple[object, object, object]],
+                      *,
+                      depth_scale: Optional[float] = None,
+                      depth_trunc: float = 3.0,
+                      flip: bool = True,
+                      stop_after: str = "all") -> CubeDetectionResult:
+        stage = stop_after.lower()
+        if stage not in {"none", "filter", "cluster", "all"}:
+            raise ValueError(f"Invalid stop_after '{stop_after}'. "
+                             "Choose from: none, filter, cluster, all.")
+        if not frames:
+            raise ValueError("process_batch requires at least one RGB-D frame")
+
+        last_rgb_msg, last_depth_msg, last_camera_info_msg = frames[-1]
+        if stage == "none":
+            return self._build_none_result(
+                last_rgb_msg,
+                last_depth_msg,
+                last_camera_info_msg,
+                depth_scale=depth_scale,
+                depth_trunc=depth_trunc,
+                flip=flip,
+            )
+
+        frame_data_list = [
+            self._extract_frame_data(
+                rgb_msg,
+                depth_msg,
+                camera_info_msg,
+                depth_scale=depth_scale,
+                depth_trunc=depth_trunc,
+                flip=flip,
+            )
+            for rgb_msg, depth_msg, camera_info_msg in frames
+        ]
+        last_frame_data = frame_data_list[-1]
+        estimation_clusters = self._merge_cluster_frames(
+            [frame_data.clusters for frame_data in frame_data_list]
+        )
+        return self._build_result(
+            last_frame_data,
+            estimation_clusters,
+            stop_after=stage,
+        )
+
+    def process(self,
+                rgb_msg,
+                depth_msg,
+                camera_info_msg,
+                *,
+                depth_scale: Optional[float] = None,
+                depth_trunc: float = 3.0,
+                flip: bool = True,
+                stop_after: str = "all") -> CubeDetectionResult:
+        return self.process_batch(
+            [(rgb_msg, depth_msg, camera_info_msg)],
+            depth_scale=depth_scale,
+            depth_trunc=depth_trunc,
+            flip=flip,
+            stop_after=stop_after,
         )

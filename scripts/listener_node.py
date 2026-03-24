@@ -262,27 +262,15 @@ class SingleCloudNode:
                 rospy.logerr("No valid synchronized RGB-D frame received before shutdown")
                 return
             depth_scale = self.params.depth_scale if self.params.depth_scale > 0.0 else None
-            result = None
-            for frame_idx, (frame_rgb_msg, frame_depth_msg, frame_info_msg) in enumerate(rgbd_frames, start=1):
-                rospy.loginfo(
-                    "Processing stacked SAM frame %d/%d",
-                    frame_idx,
-                    len(rgbd_frames),
-                )
-                result = self.sam_pipeline.process(
-                    frame_rgb_msg,
-                    frame_depth_msg,
-                    frame_info_msg,
-                    depth_scale=depth_scale,
-                    depth_trunc=self.params.depth_trunc,
-                    flip=self.params.rgbd_flip,
-                    stop_after=self.stage,
-                )
-                rgb_msg = frame_rgb_msg
-
-            if result is None:
-                rospy.logerr("SAM pipeline did not produce a result")
-                return
+            rospy.loginfo("Processing SAM batch with %d frames", len(rgbd_frames))
+            result = self.sam_pipeline.process_batch(
+                rgbd_frames,
+                depth_scale=depth_scale,
+                depth_trunc=self.params.depth_trunc,
+                flip=self.params.rgbd_flip,
+                stop_after=self.stage,
+            )
+            rgb_msg = rgbd_frames[-1][0]
 
             if self.params.sam_show_windows and result.sam_rgb_image is not None:
                 rgb_arr = np.asarray(result.sam_rgb_image)
