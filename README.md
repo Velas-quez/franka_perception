@@ -17,6 +17,8 @@ roslaunch zed_wrapper zed2i.launch \
 
 roslaunch panda_moveit_config franka_control.launch robot_ip:=10.10.10.10
 
+rosrun tf static_transform_publisher 1.145 -0.02 0.49 -0.3713077586971122 -0.0192055737257127 0.9282693967427805 0.008810297383609828 world zed2i_camera_center 100
+
 # franka_perception
 
 ROS pipeline for 3D perception with ZED cameras, focused on cube detection and pose estimation for Franka.
