@@ -51,7 +51,7 @@ source devel/setup.bash
 - `sam_checkpoint_path`: SAM1 checkpoint path (optional)
 - `sam_prompt_text`: text prompt used in SAM3
 - `use_rgbd`: `true|false`
-- `support_plane_constraint`: `fix_icp|ajust|none` (default `fix_icp`; constrain during ICP, adjust only after ICP, or disable support-plane handling)
+- `support_plane_constraint`: `fix_icp|adjust|stack|none` (default `adjust`; constrain during ICP, adjust only after ICP, stack cubes on the top face of lower cubes when applicable, or disable support-plane handling)
 - `rgbd_flip`: `true|false` (default `false`; keep `false` when using TF to world)
 - `enviroment`: `poseidon|atena|simulation`
 - `enable_tracking`: `true|false` (default `false`; publish persistent tracked IDs on dedicated topics)
@@ -62,7 +62,7 @@ source devel/setup.bash
 - `sam_checkpoint_path`: SAM1 checkpoint path (optional)
 - `sam_prompt_text`: text prompt used in SAM3
 - `use_rgbd`: `true|false`
-- `support_plane_constraint`: `fix_icp|ajust|none` (default `fix_icp`)
+- `support_plane_constraint`: `fix_icp|adjust|stack|none` (default `adjust`)
 - `rgbd_flip`: `true|false` (default `false`; keep `false` when using TF to world)
 - `enviroment`: `poseidon|atena|simulation`
 

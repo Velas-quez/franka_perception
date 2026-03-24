@@ -4,7 +4,7 @@
   <arg name="sam_checkpoint_path" default="" doc="Absolute path to SAM checkpoint (.pth)" />
   <arg name="sam_prompt_text" default="cube" doc="Text prompt for cube detection in SAM3 mode" />
   <arg name="use_rgbd" default="true" doc="Use RGB-D topics instead of PointCloud2" />
-  <arg name="support_plane_constraint" default="ajust" doc="Support-plane mode for cube fitting: fix_icp|ajust|none" />
+  <arg name="support_plane_constraint" default="adjust" doc="Support-plane mode for cube fitting: fix_icp|adjust|stack|none" />
   <arg name="rgbd_flip" default="false" doc="Flip RGB-D cloud axes for Open3D-style visualization only" />
   <arg name="n_stack_cube_cloud" default="1" doc="Fuse this many consecutive SAM-masked cube clouds before estimating cube poses" />
   <arg name="target_frame" default="world" doc="Optional output frame. Use 'none' to disables TF conversion." />

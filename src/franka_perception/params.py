@@ -27,7 +27,7 @@ _TOPICS_BY_ENVIROMENT = {
     },
 }
 
-_SUPPORT_PLANE_CONSTRAINT_MODES = {"fix_icp", "ajust", "none"}
+_SUPPORT_PLANE_CONSTRAINT_MODES = {"fix_icp", "adjust", "stack", "none"}
 
 
 def _normalize_support_plane_constraint(value) -> str:
@@ -38,13 +38,13 @@ def _normalize_support_plane_constraint(value) -> str:
     aliases = {
         "true": "fix_icp",
         "false": "none",
-        "adjust": "ajust",
+        "ajust": "adjust",
     }
     mode = aliases.get(mode, mode)
     if mode not in _SUPPORT_PLANE_CONSTRAINT_MODES:
         rospy.logwarn(
             "Unknown support_plane_constraint='%s'; falling back to 'fix_icp'. "
-            "Valid values: fix_icp|ajust|none",
+            "Valid values: fix_icp|adjust|stack|none",
             value,
         )
         return "fix_icp"

@@ -10,7 +10,7 @@ import open3d as o3d
 from .cube_pose import estimate_cube_pose
 from .plane_segmentation import PlaneDetection, segment_planes
 
-_SUPPORT_PLANE_CONSTRAINT_MODES = {"fix_icp", "ajust", "none"}
+_SUPPORT_PLANE_CONSTRAINT_MODES = {"fix_icp", "adjust", "stack", "none"}
 
 
 @dataclass
@@ -91,6 +91,40 @@ def _project_to_plane(vec: np.ndarray, normal: np.ndarray) -> np.ndarray:
     return vec - normal * float(np.dot(vec, normal))
 
 
+def _max_center_to_support_plane_distance(cube_side_length: float) -> float:
+    return 0.5 * float(cube_side_length) * np.sqrt(3.0)
+
+
+def _select_support_axis(R: np.ndarray,
+                         plane_normal: np.ndarray) -> Tuple[int, np.ndarray]:
+    support_axis_index = int(np.argmax(np.abs(R.T @ plane_normal)))
+    support_axis = R[:, support_axis_index]
+    if float(np.dot(support_axis, plane_normal)) < 0.0:
+        support_axis = -support_axis
+    return support_axis_index, support_axis
+
+
+def _build_plane_model(point: np.ndarray, normal: np.ndarray) -> np.ndarray:
+    normal = np.asarray(normal, dtype=float)
+    normal /= np.linalg.norm(normal) + 1e-12
+    point = np.asarray(point, dtype=float)
+    return np.array([normal[0], normal[1], normal[2], -float(np.dot(normal, point))])
+
+
+def _make_cube_mesh(cube_side_length: float,
+                    T: np.ndarray,
+                    color: Tuple[float, float, float]) -> o3d.geometry.TriangleMesh:
+    cube_mesh = o3d.geometry.TriangleMesh.create_box(
+        cube_side_length,
+        cube_side_length,
+        cube_side_length
+    )
+    cube_mesh.translate(-cube_mesh.get_center())
+    cube_mesh.transform(T)
+    cube_mesh.paint_uniform_color(color)
+    return cube_mesh
+
+
 def _make_supported_transform(params: np.ndarray,
                               base_center: np.ndarray,
                               plane_u: np.ndarray,
@@ -145,38 +179,143 @@ def _normalize_support_plane_constraint(mode) -> str:
     aliases = {
         "true": "fix_icp",
         "false": "none",
-        "adjust": "ajust",
+        "ajust": "adjust",
     }
     normalized = aliases.get(text, text)
     return normalized if normalized in _SUPPORT_PLANE_CONSTRAINT_MODES else "fix_icp"
 
 
-def _adjust_transform_to_support_plane(T: np.ndarray,
-                                       cube_side_length: float,
-                                       support_plane_model: Optional[np.ndarray]) -> np.ndarray:
-    plane = _normalize_plane(support_plane_model, T[:3, 3])
+def _adjust_transform_to_plane(T: np.ndarray,
+                               cube_side_length: float,
+                               plane: Optional[Tuple[np.ndarray, float]]) -> np.ndarray:
     if plane is None:
         return T.copy()
 
     plane_normal, plane_offset = plane
+    max_center_distance = _max_center_to_support_plane_distance(cube_side_length)
+    center_distance = float(np.dot(plane_normal, T[:3, 3]) + plane_offset)
+    if center_distance > max_center_distance:
+        return T.copy()
+
     adjusted_T = T.copy()
     R = _orthonormalize(adjusted_T[:3, :3])
 
-    support_axis_index = int(np.argmax(np.abs(R.T @ plane_normal)))
-    support_axis = R[:, support_axis_index]
-    if float(np.dot(support_axis, plane_normal)) < 0.0:
-        support_axis = -support_axis
-
+    _, support_axis = _select_support_axis(R, plane_normal)
     align_R = _rotation_between_vectors(support_axis, plane_normal)
     adjusted_R = _orthonormalize(align_R @ R)
     adjusted_T[:3, :3] = adjusted_R
 
     half_side = 0.5 * float(cube_side_length)
     center = adjusted_T[:3, 3].copy()
-    signed_distance = float(np.dot(plane_normal, center) + plane_offset)
-    center = center + (half_side - signed_distance) * plane_normal
+    center = center + (half_side - center_distance) * plane_normal
     adjusted_T[:3, 3] = center
     return adjusted_T
+
+
+def _adjust_transform_to_support_plane(T: np.ndarray,
+                                       cube_side_length: float,
+                                       support_plane_model: Optional[np.ndarray]) -> np.ndarray:
+    plane = _normalize_plane(support_plane_model, T[:3, 3])
+    return _adjust_transform_to_plane(T, cube_side_length, plane)
+
+
+def _cube_top_support_plane(support_cube_T: np.ndarray,
+                            cube_side_length: float,
+                            table_plane_model: Optional[np.ndarray]) -> Optional[Tuple[np.ndarray, np.ndarray]]:
+    table_plane = _normalize_plane(table_plane_model, support_cube_T[:3, 3])
+    if table_plane is None:
+        return None
+
+    table_normal, _ = table_plane
+    R_support = _orthonormalize(support_cube_T[:3, :3])
+    _, support_axis = _select_support_axis(R_support, table_normal)
+    top_face_center = support_cube_T[:3, 3] + 0.5 * float(cube_side_length) * support_axis
+    plane_model = _build_plane_model(top_face_center, support_axis)
+    return plane_model, support_axis
+
+
+def _is_cube_vertically_over_cube(T: np.ndarray,
+                                  support_cube_T: np.ndarray,
+                                  cube_side_length: float,
+                                  table_plane_model: Optional[np.ndarray]) -> bool:
+    top_support = _cube_top_support_plane(
+        support_cube_T,
+        cube_side_length,
+        table_plane_model,
+    )
+    if top_support is None:
+        return False
+
+    _, support_axis = top_support
+    R_support = _orthonormalize(support_cube_T[:3, :3])
+    support_axis_index, support_axis = _select_support_axis(R_support, support_axis)
+    rel = T[:3, 3] - support_cube_T[:3, 3]
+    if float(np.dot(rel, support_axis)) <= 0.0:
+        return False
+
+    half_side = 0.5 * float(cube_side_length)
+    support_margin = max(0.002, 0.05 * float(cube_side_length))
+    for idx in range(3):
+        if idx == support_axis_index:
+            continue
+        coord = float(np.dot(rel, R_support[:, idx]))
+        if abs(coord) > half_side + support_margin:
+            return False
+    return True
+
+
+def _adjust_transform_to_stack_support(T: np.ndarray,
+                                       cube_side_length: float,
+                                       support_plane_model: Optional[np.ndarray],
+                                       support_cubes: List[CubeEstimate]) -> np.ndarray:
+    candidate_planes: List[Tuple[float, np.ndarray]] = []
+
+    table_plane = _normalize_plane(support_plane_model, T[:3, 3])
+    if table_plane is not None:
+        table_distance = float(np.dot(table_plane[0], T[:3, 3]) + table_plane[1])
+        if table_distance <= _max_center_to_support_plane_distance(cube_side_length):
+            candidate_planes.append((table_distance, np.asarray(support_plane_model, dtype=float)))
+
+    for support_cube in support_cubes:
+        if not _is_cube_vertically_over_cube(
+            T,
+            support_cube.transform,
+            cube_side_length,
+            support_plane_model,
+        ):
+            continue
+
+        top_support = _cube_top_support_plane(
+            support_cube.transform,
+            cube_side_length,
+            support_plane_model,
+        )
+        if top_support is None:
+            continue
+
+        support_cube_plane_model, _ = top_support
+        plane = _normalize_plane(support_cube_plane_model, T[:3, 3])
+        if plane is None:
+            continue
+
+        plane_distance = float(np.dot(plane[0], T[:3, 3]) + plane[1])
+        if plane_distance <= _max_center_to_support_plane_distance(cube_side_length):
+            candidate_planes.append((plane_distance, support_cube_plane_model))
+
+    if not candidate_planes:
+        return T.copy()
+
+    _, best_plane_model = min(candidate_planes, key=lambda item: item[0])
+    best_plane = _normalize_plane(best_plane_model, T[:3, 3])
+    return _adjust_transform_to_plane(T, cube_side_length, best_plane)
+
+
+def _support_height(T: np.ndarray,
+                    support_plane_model: Optional[np.ndarray]) -> float:
+    plane = _normalize_plane(support_plane_model, T[:3, 3])
+    if plane is None:
+        return float(T[2, 3])
+    return float(np.dot(plane[0], T[:3, 3]) + plane[1])
 
 
 def _supported_icp(source_pcd: o3d.geometry.PointCloud,
@@ -334,14 +473,11 @@ def fit_cubes_in_cluster(cluster_pcd: o3d.geometry.PointCloud,
         init_T[:3, :3] = R_init
         init_T[:3, 3] = t_init
 
-        cube_mesh_init = o3d.geometry.TriangleMesh.create_box(
+        cube_mesh_init = _make_cube_mesh(
             cube_side_length,
-            cube_side_length,
-            cube_side_length
+            init_T,
+            (1.0, 0.6, 0.0),
         )
-        cube_mesh_init.translate(-cube_mesh_init.get_center())
-        cube_mesh_init.transform(init_T)
-        cube_mesh_init.paint_uniform_color([1.0, 0.6, 0.0])
 
         cube_mesh = o3d.geometry.TriangleMesh.create_box(
             cube_side_length,
@@ -386,24 +522,29 @@ def fit_cubes_in_cluster(cluster_pcd: o3d.geometry.PointCloud,
             T_final = icp_result.transformation.copy()
             icp_fitness = float(icp_result.fitness)
 
-        if support_plane_mode == "ajust":
+        if support_plane_mode == "adjust":
             T_final = _adjust_transform_to_support_plane(
                 T_final,
                 cube_side_length,
                 support_plane_model,
             )
             icp_fitness, _ = _evaluate_transform(source_points, target_pcd, T_final)
+        elif support_plane_mode == "stack":
+            T_final = _adjust_transform_to_stack_support(
+                T_final,
+                cube_side_length,
+                support_plane_model,
+                estimates,
+            )
+            icp_fitness, _ = _evaluate_transform(source_points, target_pcd, T_final)
 
         T_final[:3, :3] = _orthonormalize(T_final[:3, :3])
 
-        cube_mesh_est = o3d.geometry.TriangleMesh.create_box(
+        cube_mesh_est = _make_cube_mesh(
             cube_side_length,
-            cube_side_length,
-            cube_side_length
+            T_final,
+            (0.1, 0.4, 0.9),
         )
-        cube_mesh_est.translate(-cube_mesh_est.get_center())
-        cube_mesh_est.transform(T_final)
-        cube_mesh_est.paint_uniform_color([0.1, 0.4, 0.9])
 
         estimates.append(
             CubeEstimate(
@@ -420,6 +561,29 @@ def fit_cubes_in_cluster(cluster_pcd: o3d.geometry.PointCloud,
         remaining_pcd = remaining_pcd.select_by_index(keep_indices)
         if len(remaining_pcd.points) < 30:
             break
+
+    if support_plane_mode == "stack" and len(estimates) > 0:
+        sorted_indices = sorted(
+            range(len(estimates)),
+            key=lambda idx: _support_height(estimates[idx].transform, support_plane_model),
+        )
+        placed_cubes: List[CubeEstimate] = []
+        for idx in sorted_indices:
+            estimate = estimates[idx]
+            adjusted_T = _adjust_transform_to_stack_support(
+                estimate.transform,
+                cube_side_length,
+                support_plane_model,
+                placed_cubes,
+            )
+            adjusted_T[:3, :3] = _orthonormalize(adjusted_T[:3, :3])
+            estimate.transform = adjusted_T
+            estimate.mesh = _make_cube_mesh(
+                cube_side_length,
+                adjusted_T,
+                (0.1, 0.4, 0.9),
+            )
+            placed_cubes.append(estimate)
 
     return estimates, obbs, failed_initial_meshes
 
