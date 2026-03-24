@@ -84,6 +84,8 @@ class PerceptionParams:
     num_best_cubes: int
     clearance: float
     support_plane_constraint: str
+    safe_area_width: float
+    safe_area_length: float
 
     # SAM backend and model/prompt configuration.
     sam_mode: str
@@ -178,6 +180,8 @@ def load_params(ns: str = "~") -> PerceptionParams:
         clearance=float(_p("clearance", 0.015)),
         support_plane_constraint=_normalize_support_plane_constraint(
             _p("support_plane_constraint", "fix_icp")),
+        safe_area_width=max(0.0, float(_p("safe_area_width", 1.0))),
+        safe_area_length=max(0.0, float(_p("safe_area_length", 1.0))),
 
         # SAM backend and model/prompt configuration.
         sam_mode=_p("sam_mode", "sam3"),

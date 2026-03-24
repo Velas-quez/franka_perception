@@ -15,6 +15,7 @@ from visualization_msgs.msg import Marker, MarkerArray
 from franka_perception_thiago.msg import TrackedCube, TrackedCubeArray
 
 from ..geometry.cube_fitting import CubeEstimate
+from ..safe_area import SAFE_AREA_FRAME, build_safe_area_marker_array
 from ..tracking.cube_tracker import TrackedCubeState
 
 
@@ -221,3 +222,14 @@ def publish_point_clouds(cubes: Iterable[CubeEstimate],
         points = np.asarray(sampled_pcd.points, dtype=np.float32)
         pc2_msg = pc2.create_cloud_xyz32(hdr, points)
         publisher.publish(pc2_msg)
+
+
+def publish_safe_area(header: Optional[Header],
+                      safe_area_width: float,
+                      safe_area_length: float,
+                      publisher) -> None:
+    if publisher is None:
+        return
+
+    hdr = _resolved_header(header, default_frame=SAFE_AREA_FRAME)
+    publisher.publish(build_safe_area_marker_array(hdr, safe_area_width, safe_area_length))

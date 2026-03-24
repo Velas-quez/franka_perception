@@ -1,15 +1,13 @@
 #!/usr/bin/env python3
 """Process point clouds continuously and publish cube poses/markers."""
 
-import copy
 import threading
 from typing import Iterable, List, Optional, Sequence, Tuple
 
+import message_filters
 import numpy as np
 import rospy
-import message_filters
 import tf2_ros
-import tf.transformations as tf_trans
 from geometry_msgs.msg import PoseArray
 from sensor_msgs import point_cloud2 as pc2
 from sensor_msgs.msg import CameraInfo, Image, PointCloud2
@@ -17,19 +15,22 @@ from std_msgs.msg import Header
 from visualization_msgs.msg import MarkerArray
 
 from franka_perception_thiago.msg import TrackedCubeArray
-from franka_perception.core.cloud_io import msg_to_xyz, has_points, rgbd_msgs_to_xyz
+from franka_perception.core.cloud_io import has_points, msg_to_xyz, rgbd_msgs_to_xyz
 from franka_perception.core.publishers import (
     publish_markers,
     publish_point_clouds,
     publish_poses,
+    publish_safe_area,
     publish_tracked_cubes,
     publish_tracked_labels,
     publish_tracked_markers,
 )
+from franka_perception.core.transforms import transform_cubes, transform_to_matrix
 from franka_perception.geometry.cube_fitting import CubeEstimate
 from franka_perception.params import load_params
 from franka_perception.pipelines.pipeline import CubeDetectionPipeline
 from franka_perception.pipelines.sam_rgbd_pipeline import SamRgbdCubeDetectionPipeline
+from franka_perception.safe_area import SAFE_AREA_FRAME, safe_area_keep_mask
 from franka_perception.tracking.cube_tracker import CubeTracker, DetectionObservation
 
 
@@ -127,6 +128,7 @@ class DynamicListenerNode:
 
         self._pose_pub = rospy.Publisher("~cube_poses", PoseArray, queue_size=5)
         self._marker_pub = rospy.Publisher("~cube_markers", MarkerArray, queue_size=5)
+        self._safe_area_pub = rospy.Publisher("~safe_area", MarkerArray, queue_size=1, latch=True)
         self._reconstructed_cloud_pub = rospy.Publisher("~reconstructed_cloud", PointCloud2, queue_size=1)
         self._tracked_pub = None
         self._tracked_marker_pub = None
@@ -281,8 +283,11 @@ class DynamicListenerNode:
                 result = self.pipeline.process(points)
 
             source_cubes = list(result.cubes)
-            cubes_base, header_base = self._transform_cubes_to_target(source_cubes, header)
-            cubes_base = list(cubes_base)
+            self._publish_safe_area(header)
+            filtered_source_cubes, cubes_base, header_base = self._filter_and_transform_cubes(
+                source_cubes,
+                header,
+            )
 
             publish_poses(cubes_base, header_base, self.params.cube_side_length, self._pose_pub)
             publish_markers(cubes_base, header_base, self.params.cube_side_length, self._marker_pub)
@@ -290,7 +295,7 @@ class DynamicListenerNode:
 
             if self.enable_tracking:
                 observations = self._build_tracking_observations(
-                    source_cubes,
+                    filtered_source_cubes,
                     cubes_base,
                     result.sam_masks,
                     info_msg,
@@ -444,17 +449,72 @@ class DynamicListenerNode:
                 publish_point_clouds([cube], header, num_samples=1500,
                                      publisher=self._cloud_pubs[idx])
 
-    def _transform_cubes_to_target(self,
-                                   cubes: Iterable[CubeEstimate],
-                                   header: Optional[Header]):
-        """Transform estimated cube poses to target frame only."""
-        target_frame = self.params.target_frame
+    def _publish_safe_area(self, header: Optional[Header]) -> None:
+        safe_area_header = Header()
+        safe_area_header.frame_id = SAFE_AREA_FRAME
+        safe_area_header.stamp = header.stamp if header is not None else rospy.Time.now()
+        publish_safe_area(
+            safe_area_header,
+            self.params.safe_area_width,
+            self.params.safe_area_length,
+            self._safe_area_pub,
+        )
+
+    def _filter_and_transform_cubes(self,
+                                    cubes: Sequence[CubeEstimate],
+                                    header: Optional[Header]):
+        cubes = list(cubes)
+        cubes_world, header_world, world_ok = self._transform_cubes_to_frame(
+            cubes,
+            header,
+            SAFE_AREA_FRAME,
+        )
+        if world_ok:
+            keep_mask = safe_area_keep_mask(
+                cubes_world,
+                self.params.safe_area_width,
+                self.params.safe_area_length,
+            )
+            filtered_source = [cube for cube, keep in zip(cubes, keep_mask) if keep]
+            filtered_world = [cube for cube, keep in zip(cubes_world, keep_mask) if keep]
+            discarded = len(cubes) - len(filtered_source)
+            if discarded > 0:
+                rospy.loginfo("Discarded %d cube estimate(s) outside the safe area", discarded)
+        else:
+            filtered_source = cubes
+            filtered_world = cubes_world
+            if cubes:
+                rospy.logwarn_throttle(
+                    5.0,
+                    "Could not transform cube estimates to world; safe-area filtering skipped.",
+                )
+
+        target_frame = str(self.params.target_frame).strip() if self.params.target_frame is not None else ""
+        if target_frame == "" or target_frame.lower() == "none":
+            return filtered_source, filtered_source, header
+        if target_frame == SAFE_AREA_FRAME and world_ok:
+            return filtered_source, filtered_world, header_world
+
+        cubes_target, header_target, _ = self._transform_cubes_to_frame(
+            filtered_source,
+            header,
+            target_frame,
+        )
+        return filtered_source, cubes_target, header_target
+
+    def _transform_cubes_to_frame(self,
+                                  cubes: Iterable[CubeEstimate],
+                                  header: Optional[Header],
+                                  target_frame: Optional[str]):
+        cubes = list(cubes)
         if header is None or target_frame is None:
-            return cubes, header
+            return cubes, header, False
 
         target_frame = str(target_frame).strip()
         if target_frame == "" or target_frame.lower() == "none":
-            return cubes, header
+            return cubes, header, False
+        if header.frame_id == target_frame:
+            return cubes, header, True
 
         try:
             tf_msg = self._tf_buffer.lookup_transform(
@@ -466,38 +526,14 @@ class DynamicListenerNode:
         except (tf2_ros.LookupException, tf2_ros.ExtrapolationException, tf2_ros.ConnectivityException) as exc:
             rospy.logwarn("TF lookup failed (%s -> %s): %s",
                           header.frame_id, target_frame, exc)
-            return cubes, header
+            return cubes, header, False
 
-        T = _transform_to_matrix(tf_msg)
-        transformed = []
-        for cube in cubes:
-            new_T = T @ cube.transform
-            transformed_mesh = copy.deepcopy(cube.mesh)
-            transformed_mesh.transform(T)
-            transformed.append(
-                CubeEstimate(
-                    transform=new_T,
-                    mesh=transformed_mesh,
-                    initial_mesh=cube.initial_mesh,
-                    icp_fitness=cube.icp_fitness,
-                )
-            )
+        transformed = transform_cubes(cubes, transform_to_matrix(tf_msg))
 
         new_header = Header()
         new_header.frame_id = target_frame
         new_header.stamp = header.stamp
-        return transformed, new_header
-
-
-def _transform_to_matrix(tf_msg):
-    """Convert TransformStamped to 4x4 matrix."""
-    trans = tf_msg.transform.translation
-    rot = tf_msg.transform.rotation
-    T = tf_trans.quaternion_matrix([rot.x, rot.y, rot.z, rot.w])
-    T[0, 3] = trans.x
-    T[1, 3] = trans.y
-    T[2, 3] = trans.z
-    return T
+        return transformed, new_header, True
 
 
 def main() -> None:

@@ -4,17 +4,29 @@
 import threading
 from typing import List, Optional, Tuple
 
+import message_filters
 import numpy as np
 import rospy
+import tf2_ros
 from sensor_msgs.msg import CameraInfo, Image, PointCloud2
-import message_filters
+from std_msgs.msg import Header
 
-from franka_perception.core.cloud_io import msg_to_xyz, has_points, rgbd_msgs_to_xyz
+from franka_perception.core.cloud_io import has_points, msg_to_xyz, rgbd_msgs_to_xyz
+from franka_perception.core.transforms import (
+    transform_detection_result,
+    transform_points,
+    transform_to_matrix,
+)
 from franka_perception.params import load_params
 from franka_perception.pipelines.pipeline import CubeDetectionPipeline
 from franka_perception.pipelines.sam_rgbd_pipeline import SamRgbdCubeDetectionPipeline
 from franka_perception.render.sam_visualization import show_dino_and_sam
 from franka_perception.render.visualization import draw
+from franka_perception.safe_area import (
+    SAFE_AREA_FRAME,
+    build_safe_area_geometries,
+    safe_area_keep_mask,
+)
 
 
 class SingleCloudNode:
@@ -96,9 +108,13 @@ class SingleCloudNode:
         self._rgb_msg: Optional[Image] = None
         self._depth_msg: Optional[Image] = None
         self._camera_info_msg: Optional[CameraInfo] = None
-        self._rgbd_frames: List[Tuple[Image, Image, CameraInfo]] = []
+        self._rgbd_frames: List[Tuple[Image, Image, CameraInfo, Header]] = []
+        self._cloud_header: Optional[Header] = None
+        self._rgbd_header: Optional[Header] = None
         self._cloud_ready = threading.Event()
         self._lock = threading.Lock()
+        self._tf_buffer = tf2_ros.Buffer()
+        self._tf_listener = tf2_ros.TransformListener(self._tf_buffer)
 
         self._cloud_sub = None
         self._rgb_sub = None
@@ -143,6 +159,7 @@ class SingleCloudNode:
             if has_points(self._cloud_topic_points):
                 return
             self._cloud_topic_points = points
+            self._cloud_header = msg.header
             if self._ready_locked():
                 self._cloud_ready.set()
         rospy.loginfo("Captured point-cloud topic with %d points", points.shape[0])
@@ -191,13 +208,15 @@ class SingleCloudNode:
                 self._rgb_msg = rgb_msg
                 self._depth_msg = depth_msg
                 self._camera_info_msg = info_msg
-                self._rgbd_frames.append((rgb_msg, depth_msg, info_msg))
+                self._rgbd_header = depth_msg.header
+                self._rgbd_frames.append((rgb_msg, depth_msg, info_msg, depth_msg.header))
                 captured_frames = len(self._rgbd_frames)
                 should_unregister = captured_frames >= self._target_rgbd_frames
             else:
                 if has_points(self._rgbd_points):
                     return
                 self._rgbd_points = points
+                self._rgbd_header = depth_msg.header
                 captured_frames = 1
                 should_unregister = True
 
@@ -255,8 +274,11 @@ class SingleCloudNode:
             depth_msg = self._depth_msg
             info_msg = self._camera_info_msg
             rgbd_frames = list(self._rgbd_frames)
+            cloud_header = self._cloud_header
+            rgbd_header = self._rgbd_header
 
         rospy.loginfo("Rendering pipeline stage: %s", self.stage)
+        result_header = rgbd_header if self.params.use_rgbd else cloud_header
         if self.pipeline_mode == "sam_rgbd":
             if not rgbd_frames:
                 rospy.logerr("No valid synchronized RGB-D frame received before shutdown")
@@ -264,13 +286,14 @@ class SingleCloudNode:
             depth_scale = self.params.depth_scale if self.params.depth_scale > 0.0 else None
             rospy.loginfo("Processing SAM batch with %d frames", len(rgbd_frames))
             result = self.sam_pipeline.process_batch(
-                rgbd_frames,
+                [(frame_rgb, frame_depth, frame_info) for frame_rgb, frame_depth, frame_info, _ in rgbd_frames],
                 depth_scale=depth_scale,
                 depth_trunc=self.params.depth_trunc,
                 flip=self.params.rgbd_flip,
                 stop_after=self.stage,
             )
             rgb_msg = rgbd_frames[-1][0]
+            result_header = rgbd_frames[-1][3]
 
             if self.params.sam_show_windows and result.sam_rgb_image is not None:
                 rgb_arr = np.asarray(result.sam_rgb_image)
@@ -309,9 +332,33 @@ class SingleCloudNode:
         if self.show_input_clouds:
             extra_clouds = []
             if has_points(cloud_topic_points):
-                extra_clouds.append((cloud_topic_points, [0.15, 0.45, 0.95]))
+                extra_cloud = self._transform_points_to_world(cloud_topic_points, cloud_header)
+                extra_clouds.append((extra_cloud, [0.15, 0.45, 0.95]))
             if has_points(rgbd_points):
-                extra_clouds.append((rgbd_points, [0.95, 0.55, 0.15]))
+                extra_cloud = self._transform_points_to_world(rgbd_points, rgbd_header)
+                extra_clouds.append((extra_cloud, [0.95, 0.55, 0.15]))
+
+        result, world_ok = self._transform_result_to_world(result, result_header)
+        safe_area_geometries = []
+        if world_ok:
+            keep_mask = safe_area_keep_mask(
+                result.cubes,
+                self.params.safe_area_width,
+                self.params.safe_area_length,
+            )
+            kept_cubes = [cube for cube, keep in zip(result.cubes, keep_mask) if keep]
+            discarded = len(result.cubes) - len(kept_cubes)
+            if discarded > 0:
+                rospy.loginfo("Discarded %d cube estimate(s) outside the safe area", discarded)
+            result.cubes = kept_cubes
+            safe_area_geometries = build_safe_area_geometries(
+                self.params.safe_area_width,
+                self.params.safe_area_length,
+            )
+        elif result.cubes:
+            rospy.logwarn(
+                "Could not transform the visualization result to world; safe-area filtering was skipped."
+            )
 
         try:
             draw(
@@ -319,9 +366,53 @@ class SingleCloudNode:
                 axis_size=self.params.axis_size,
                 show_original_cloud=self.show_original_cloud,
                 extra_clouds=extra_clouds,
+                extra_geometries=safe_area_geometries,
             )
         except Exception as exc:
             rospy.logerr("Failed to render point cloud: %s", exc)
+
+    def _transform_points_to_world(self,
+                                   points: Optional[np.ndarray],
+                                   header: Optional[Header]) -> Optional[np.ndarray]:
+        if not has_points(points):
+            return points
+        transform_matrix = self._lookup_transform_matrix(SAFE_AREA_FRAME, header)
+        if transform_matrix is None:
+            return points
+        return transform_points(points, transform_matrix)
+
+    def _transform_result_to_world(self,
+                                   result,
+                                   header: Optional[Header]):
+        transform_matrix = self._lookup_transform_matrix(SAFE_AREA_FRAME, header)
+        if transform_matrix is None:
+            return result, False
+        return transform_detection_result(result, transform_matrix), True
+
+    def _lookup_transform_matrix(self,
+                                 target_frame: str,
+                                 header: Optional[Header]) -> Optional[np.ndarray]:
+        if header is None:
+            return None
+
+        source_frame = str(header.frame_id).strip()
+        target_frame = str(target_frame).strip()
+        if not source_frame or not target_frame:
+            return None
+        if source_frame == target_frame:
+            return np.eye(4)
+
+        try:
+            tf_msg = self._tf_buffer.lookup_transform(
+                target_frame,
+                source_frame,
+                header.stamp,
+                rospy.Duration(0.2),
+            )
+        except (tf2_ros.LookupException, tf2_ros.ExtrapolationException, tf2_ros.ConnectivityException) as exc:
+            rospy.logwarn("TF lookup failed (%s -> %s): %s", source_frame, target_frame, exc)
+            return None
+        return transform_to_matrix(tf_msg)
 
 
 def main() -> None:

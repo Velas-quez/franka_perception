@@ -21,7 +21,8 @@ def build_geometries(result: CubeDetectionResult,
                      axis_size: float = 0.1,
                      paint_cloud: bool = True,
                      show_original_cloud: bool = False,
-                     extra_clouds: Optional[Iterable[Tuple[np.ndarray, Sequence[float]]]] = None):
+                     extra_clouds: Optional[Iterable[Tuple[np.ndarray, Sequence[float]]]] = None,
+                     extra_geometries: Optional[Iterable[object]] = None):
     """Create non-cube and cube geometry lists for rendering."""
     geometries = []
     has_masked = result.masked_cloud is not None and len(result.masked_cloud.points) > 0
@@ -53,6 +54,7 @@ def build_geometries(result: CubeDetectionResult,
         origin=[0.0, 0.0, 0.0],
     )
     geometries.append(axis)
+    geometries.extend(list(extra_geometries or ()))
     geometries.extend(result.cluster_boxes)
     # geometries.extend(result.plane_obbs)
     initial_meshes = list(result.failed_initial_meshes)
@@ -64,12 +66,14 @@ def build_geometries(result: CubeDetectionResult,
 def draw(result: CubeDetectionResult,
          axis_size: float = 0.1,
          show_original_cloud: bool = False,
-         extra_clouds: Optional[Iterable[Tuple[np.ndarray, Sequence[float]]]] = None) -> None:
+         extra_clouds: Optional[Iterable[Tuple[np.ndarray, Sequence[float]]]] = None,
+         extra_geometries: Optional[Iterable[object]] = None) -> None:
     base_geoms, cube_geoms, initial_geoms = build_geometries(
         result,
         axis_size=axis_size,
         show_original_cloud=show_original_cloud,
         extra_clouds=extra_clouds,
+        extra_geometries=extra_geometries,
     )
 
     vis = o3d.visualization.VisualizerWithKeyCallback()
