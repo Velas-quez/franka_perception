@@ -2,6 +2,7 @@
 """Process point clouds continuously and publish cube poses/markers."""
 
 import threading
+import traceback
 from typing import Iterable, List, Optional, Sequence, Tuple
 
 import message_filters
@@ -51,56 +52,7 @@ class DynamicListenerNode:
 
         self.pipeline = None
         self.sam_pipeline = None
-        if self.pipeline_mode == "sam_rgbd":
-            self.sam_pipeline = SamRgbdCubeDetectionPipeline(
-                cube_side_length=self.params.cube_side_length,
-                voxel_size=self.params.voxel_size,
-                max_cubes_per_cluster=self.params.max_cubes_per_cluster,
-                num_best_cubes=self.params.num_best_cubes,
-                clearance=self.params.clearance,
-                sam_mode=self.params.sam_mode,
-                sam_checkpoint_path=self.params.sam_checkpoint_path,
-                sam_model_type=self.params.sam_model_type,
-                sam_device=self.params.sam_device,
-                sam_points_per_side=self.params.sam_points_per_side,
-                sam_pred_iou_thresh=self.params.sam_pred_iou_thresh,
-                sam_stability_score_thresh=self.params.sam_stability_score_thresh,
-                sam_min_mask_region_area=self.params.sam_min_mask_region_area,
-                sam_prompt_text=self.params.sam_prompt_text,
-                sam_prompt_box_threshold=self.params.sam_prompt_box_threshold,
-                sam_prompt_text_threshold=self.params.sam_prompt_text_threshold,
-                sam_grounding_model_id=self.params.sam_grounding_model_id,
-                sam_segmentor_model_id=self.params.sam_segmentor_model_id,
-                sam_max_masks=self.params.sam_max_masks,
-                sam_min_mask_pixels=self.params.sam_min_mask_pixels,
-                sam_min_depth_pixels=self.params.sam_min_depth_pixels,
-                sam_mask_erosion_kernel=self.params.sam_mask_erosion_kernel,
-                sam_mask_erosion_iterations=self.params.sam_mask_erosion_iterations,
-                sam_min_points_per_cluster=self.params.sam_min_points_per_cluster,
-                sam_max_mask_area_ratio=self.params.sam_max_mask_area_ratio,
-                sam_plane_ransac_distance=self.params.sam_plane_ransac_distance,
-                sam_near_plane_distance=self.params.sam_near_plane_distance,
-                sam_max_near_plane_ratio=self.params.sam_max_near_plane_ratio,
-                sam_min_mask_plane_height=self.params.sam_min_mask_plane_height,
-                sam_max_cluster_extent_multiplier=self.params.sam_max_cluster_extent_multiplier,
-                sam_max_cluster_volume_multiplier=self.params.sam_max_cluster_volume_multiplier,
-                support_plane_constraint=self.params.support_plane_constraint,
-                n_stack_cube_cloud=self.params.n_stack_cube_cloud,
-            )
-        else:
-            self.pipeline = CubeDetectionPipeline(
-                cube_side_length=self.params.cube_side_length,
-                voxel_size=self.params.voxel_size,
-                base_plane_distance=self.params.base_plane_distance,
-                cluster_eps=self.params.cluster_eps,
-                cluster_min_points=self.params.cluster_min_points,
-                max_cubes_per_cluster=self.params.max_cubes_per_cluster,
-                num_best_cubes=self.params.num_best_cubes,
-                clearance=self.params.clearance,
-                max_cluster_distance_from_plane_inliers=self.params.max_cluster_distance_from_plane_inliers,
-                below_plane_tolerance=self.params.below_plane_tolerance,
-                support_plane_constraint=self.params.support_plane_constraint,
-            )
+        self._build_detection_pipeline()
 
         self._tracker = None
         self._tracking_frame_id: Optional[str] = None
@@ -169,6 +121,68 @@ class DynamicListenerNode:
                 self.params.cloud_topic,
                 self.enable_tracking,
             )
+
+
+    def _build_detection_pipeline(self) -> None:
+        self.pipeline = None
+        self.sam_pipeline = None
+        if self.pipeline_mode == "sam_rgbd":
+            self.sam_pipeline = SamRgbdCubeDetectionPipeline(
+                cube_side_length=self.params.cube_side_length,
+                voxel_size=self.params.voxel_size,
+                max_cubes_per_cluster=self.params.max_cubes_per_cluster,
+                num_best_cubes=self.params.num_best_cubes,
+                clearance=self.params.clearance,
+                sam_mode=self.params.sam_mode,
+                sam_checkpoint_path=self.params.sam_checkpoint_path,
+                sam_model_type=self.params.sam_model_type,
+                sam_device=self.params.sam_device,
+                sam_points_per_side=self.params.sam_points_per_side,
+                sam_pred_iou_thresh=self.params.sam_pred_iou_thresh,
+                sam_stability_score_thresh=self.params.sam_stability_score_thresh,
+                sam_min_mask_region_area=self.params.sam_min_mask_region_area,
+                sam_prompt_text=self.params.sam_prompt_text,
+                sam_prompt_box_threshold=self.params.sam_prompt_box_threshold,
+                sam_prompt_text_threshold=self.params.sam_prompt_text_threshold,
+                sam_grounding_model_id=self.params.sam_grounding_model_id,
+                sam_segmentor_model_id=self.params.sam_segmentor_model_id,
+                sam_max_masks=self.params.sam_max_masks,
+                sam_min_mask_pixels=self.params.sam_min_mask_pixels,
+                sam_min_depth_pixels=self.params.sam_min_depth_pixels,
+                sam_mask_erosion_kernel=self.params.sam_mask_erosion_kernel,
+                sam_mask_erosion_iterations=self.params.sam_mask_erosion_iterations,
+                sam_min_points_per_cluster=self.params.sam_min_points_per_cluster,
+                sam_max_mask_area_ratio=self.params.sam_max_mask_area_ratio,
+                sam_plane_ransac_distance=self.params.sam_plane_ransac_distance,
+                sam_near_plane_distance=self.params.sam_near_plane_distance,
+                sam_max_near_plane_ratio=self.params.sam_max_near_plane_ratio,
+                sam_min_mask_plane_height=self.params.sam_min_mask_plane_height,
+                sam_max_cluster_extent_multiplier=self.params.sam_max_cluster_extent_multiplier,
+                sam_max_cluster_volume_multiplier=self.params.sam_max_cluster_volume_multiplier,
+                support_plane_constraint=self.params.support_plane_constraint,
+                n_stack_cube_cloud=self.params.n_stack_cube_cloud,
+            )
+        else:
+            self.pipeline = CubeDetectionPipeline(
+                cube_side_length=self.params.cube_side_length,
+                voxel_size=self.params.voxel_size,
+                base_plane_distance=self.params.base_plane_distance,
+                cluster_eps=self.params.cluster_eps,
+                cluster_min_points=self.params.cluster_min_points,
+                max_cubes_per_cluster=self.params.max_cubes_per_cluster,
+                num_best_cubes=self.params.num_best_cubes,
+                clearance=self.params.clearance,
+                max_cluster_distance_from_plane_inliers=self.params.max_cluster_distance_from_plane_inliers,
+                below_plane_tolerance=self.params.below_plane_tolerance,
+                support_plane_constraint=self.params.support_plane_constraint,
+            )
+
+    def _restart_pipeline(self) -> None:
+        rospy.logwarn("Restarting %s pipeline after processing failure", self.pipeline_mode)
+        self._build_detection_pipeline()
+        if self._tracker is not None:
+            self._tracker.reset()
+            self._tracking_frame_id = None
 
     def _cloud_cb(self, msg: PointCloud2) -> None:
         if self._cloud_ready.is_set():
@@ -257,63 +271,71 @@ class DynamicListenerNode:
                 self._rgbd_frames.clear()
                 self._cloud_ready.clear()
 
-            if self.pipeline_mode == "sam_rgbd":
-                if not rgbd_frames:
-                    rospy.logwarn("No valid synchronized RGB-D batch received; waiting for next")
-                    continue
-                depth_scale = self.params.depth_scale if self.params.depth_scale > 0.0 else None
-                rospy.loginfo("Processing SAM batch with %d frames", len(rgbd_frames))
-                batch_frames = [
-                    (frame_rgb_msg, frame_depth_msg, frame_info_msg)
-                    for frame_rgb_msg, frame_depth_msg, frame_info_msg, _ in rgbd_frames
-                ]
-                result = self.sam_pipeline.process_batch(
-                    batch_frames,
-                    depth_scale=depth_scale,
-                    depth_trunc=self.params.depth_trunc,
-                    flip=self.params.rgbd_flip,
-                    stop_after="all",
-                )
-                header = rgbd_frames[-1][3]
-                info_msg = rgbd_frames[-1][2]
-            else:
-                if not has_points(points):
-                    rospy.logwarn("No valid point cloud received; waiting for next")
-                    continue
-                result = self.pipeline.process(points)
+            try:
+                if self.pipeline_mode == "sam_rgbd":
+                    if not rgbd_frames:
+                        rospy.logwarn("No valid synchronized RGB-D batch received; waiting for next")
+                        continue
+                    depth_scale = self.params.depth_scale if self.params.depth_scale > 0.0 else None
+                    rospy.loginfo("Processing SAM batch with %d frames", len(rgbd_frames))
+                    batch_frames = [
+                        (frame_rgb_msg, frame_depth_msg, frame_info_msg)
+                        for frame_rgb_msg, frame_depth_msg, frame_info_msg, _ in rgbd_frames
+                    ]
+                    result = self.sam_pipeline.process_batch(
+                        batch_frames,
+                        depth_scale=depth_scale,
+                        depth_trunc=self.params.depth_trunc,
+                        flip=self.params.rgbd_flip,
+                        stop_after="all",
+                    )
+                    header = rgbd_frames[-1][3]
+                    info_msg = rgbd_frames[-1][2]
+                else:
+                    if not has_points(points):
+                        rospy.logwarn("No valid point cloud received; waiting for next")
+                        continue
+                    result = self.pipeline.process(points)
 
-            source_cubes = list(result.cubes)
-            self._publish_safe_area(header)
-            filtered_source_cubes, cubes_base, header_base = self._filter_and_transform_cubes(
-                source_cubes,
-                header,
-            )
+                source_cubes = list(result.cubes)
+                self._publish_safe_area(header)
+                filtered_source_cubes, cubes_base, header_base = self._filter_and_transform_cubes(
+                    source_cubes,
+                    header,
+                )
 
-            publish_poses(cubes_base, header_base, self.params.cube_side_length, self._pose_pub)
-            publish_markers(cubes_base, header_base, self.params.cube_side_length, self._marker_pub)
-            self._publish_cube_point_clouds(cubes_base, header_base)
+                publish_poses(cubes_base, header_base, self.params.cube_side_length, self._pose_pub)
+                publish_markers(cubes_base, header_base, self.params.cube_side_length, self._marker_pub)
+                self._publish_cube_point_clouds(cubes_base, header_base)
 
-            if self.enable_tracking:
-                observations = self._build_tracking_observations(
-                    filtered_source_cubes,
-                    cubes_base,
-                    result.sam_masks,
-                    info_msg,
+                if self.enable_tracking:
+                    observations = self._build_tracking_observations(
+                        filtered_source_cubes,
+                        cubes_base,
+                        result.sam_masks,
+                        info_msg,
+                    )
+                    tracked_cubes = self._update_tracker(observations, header_base)
+                    publish_tracked_cubes(tracked_cubes, header_base, self._tracked_pub)
+                    publish_tracked_markers(
+                        tracked_cubes,
+                        header_base,
+                        self.params.cube_side_length,
+                        self._tracked_marker_pub,
+                    )
+                    publish_tracked_labels(
+                        tracked_cubes,
+                        header_base,
+                        self.params.cube_side_length,
+                        self._tracked_label_pub,
+                    )
+            except Exception as exc:
+                rospy.logerr(
+                    "Dynamic listener processing crashed: %s\n%s",
+                    exc,
+                    traceback.format_exc(),
                 )
-                tracked_cubes = self._update_tracker(observations, header_base)
-                publish_tracked_cubes(tracked_cubes, header_base, self._tracked_pub)
-                publish_tracked_markers(
-                    tracked_cubes,
-                    header_base,
-                    self.params.cube_side_length,
-                    self._tracked_marker_pub,
-                )
-                publish_tracked_labels(
-                    tracked_cubes,
-                    header_base,
-                    self.params.cube_side_length,
-                    self._tracked_label_pub,
-                )
+                self._restart_pipeline()
 
     def _build_tracking_observations(self,
                                      source_cubes: Sequence[CubeEstimate],
