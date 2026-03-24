@@ -27,7 +27,10 @@ def has_safe_area(width: float, length: float) -> bool:
     return width > 0.0 and length > 0.0
 
 
-def cube_in_safe_area(cube: CubeEstimate, width: float, length: float) -> bool:
+def cube_in_safe_area(cube: CubeEstimate,
+                      width: float,
+                      length: float,
+                      length_offset: float = 0.0) -> bool:
     if not has_safe_area(width, length):
         return True
 
@@ -35,19 +38,23 @@ def cube_in_safe_area(cube: CubeEstimate, width: float, length: float) -> bool:
     center = np.asarray(cube.transform[:3, 3], dtype=float)
     x = float(center[0])
     y = float(center[1])
+    x_min = float(length_offset)
+    x_max = x_min + length
     half_width = 0.5 * width
-    return 0.0 <= x <= length and -half_width <= y <= half_width
+    return x_min <= x <= x_max and -half_width <= y <= half_width
 
 
 def safe_area_keep_mask(cubes: Iterable[CubeEstimate],
                         width: float,
-                        length: float) -> List[bool]:
-    return [cube_in_safe_area(cube, width, length) for cube in cubes]
+                        length: float,
+                        length_offset: float = 0.0) -> List[bool]:
+    return [cube_in_safe_area(cube, width, length, length_offset) for cube in cubes]
 
 
 def build_safe_area_marker_array(header: Optional[Header],
                                  width: float,
-                                 length: float) -> MarkerArray:
+                                 length: float,
+                                 length_offset: float = 0.0) -> MarkerArray:
     marker_array = MarkerArray()
     resolved_header = Header()
     if header is not None:
@@ -73,7 +80,7 @@ def build_safe_area_marker_array(header: Optional[Header],
     fill_marker.id = 0
     fill_marker.type = Marker.CUBE
     fill_marker.action = Marker.ADD
-    fill_marker.pose.position.x = 0.5 * length
+    fill_marker.pose.position.x = float(length_offset) + 0.5 * length
     fill_marker.pose.position.y = 0.0
     fill_marker.pose.position.z = 0.5 * _SAFE_AREA_THICKNESS
     fill_marker.pose.orientation.w = 1.0
@@ -101,11 +108,11 @@ def build_safe_area_marker_array(header: Optional[Header],
     outline_marker.color.a = 0.9
     outline_marker.lifetime = rospy.Duration(0)
     for x, y in (
-        (0.0, -half_width),
-        (length, -half_width),
-        (length, half_width),
-        (0.0, half_width),
-        (0.0, -half_width),
+        (length_offset, -half_width),
+        (length_offset + length, -half_width),
+        (length_offset + length, half_width),
+        (length_offset, half_width),
+        (length_offset, -half_width),
     ):
         point = Point()
         point.x = float(x)
@@ -116,7 +123,9 @@ def build_safe_area_marker_array(header: Optional[Header],
     return marker_array
 
 
-def build_safe_area_geometries(width: float, length: float) -> List[object]:
+def build_safe_area_geometries(width: float,
+                               length: float,
+                               length_offset: float = 0.0) -> List[object]:
     if not has_safe_area(width, length):
         return []
 
@@ -128,14 +137,14 @@ def build_safe_area_geometries(width: float, length: float) -> List[object]:
         height=width,
         depth=_SAFE_AREA_THICKNESS,
     )
-    area_mesh.translate([0.0, -half_width, 0.0])
+    area_mesh.translate([float(length_offset), -half_width, 0.0])
     area_mesh.paint_uniform_color([0.1, 0.75, 0.2])
 
     outline_points = np.array([
-        [0.0, -half_width, _SAFE_AREA_OUTLINE_Z],
-        [length, -half_width, _SAFE_AREA_OUTLINE_Z],
-        [length, half_width, _SAFE_AREA_OUTLINE_Z],
-        [0.0, half_width, _SAFE_AREA_OUTLINE_Z],
+        [length_offset, -half_width, _SAFE_AREA_OUTLINE_Z],
+        [length_offset + length, -half_width, _SAFE_AREA_OUTLINE_Z],
+        [length_offset + length, half_width, _SAFE_AREA_OUTLINE_Z],
+        [length_offset, half_width, _SAFE_AREA_OUTLINE_Z],
     ], dtype=float)
     outline_lines = np.array([[0, 1], [1, 2], [2, 3], [3, 0]], dtype=np.int32)
     outline_colors = np.tile(np.array([[0.05, 0.95, 0.15]], dtype=float), (4, 1))

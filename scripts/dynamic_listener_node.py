@@ -457,6 +457,7 @@ class DynamicListenerNode:
             safe_area_header,
             self.params.safe_area_width,
             self.params.safe_area_length,
+            self.params.safe_area_length_offset,
             self._safe_area_pub,
         )
 
@@ -474,6 +475,7 @@ class DynamicListenerNode:
                 cubes_world,
                 self.params.safe_area_width,
                 self.params.safe_area_length,
+                self.params.safe_area_length_offset,
             )
             filtered_source = [cube for cube, keep in zip(cubes, keep_mask) if keep]
             filtered_world = [cube for cube, keep in zip(cubes_world, keep_mask) if keep]

@@ -227,9 +227,17 @@ def publish_point_clouds(cubes: Iterable[CubeEstimate],
 def publish_safe_area(header: Optional[Header],
                       safe_area_width: float,
                       safe_area_length: float,
+                      safe_area_length_offset: float,
                       publisher) -> None:
     if publisher is None:
         return
 
     hdr = _resolved_header(header, default_frame=SAFE_AREA_FRAME)
-    publisher.publish(build_safe_area_marker_array(hdr, safe_area_width, safe_area_length))
+    publisher.publish(
+        build_safe_area_marker_array(
+            hdr,
+            safe_area_width,
+            safe_area_length,
+            safe_area_length_offset,
+        )
+    )
