@@ -113,6 +113,7 @@ class PerceptionParams:
     sam_min_mask_plane_height: float
     sam_max_cluster_extent_multiplier: float
     sam_max_cluster_volume_multiplier: float
+    n_stack_cube_cloud: int
 
     # SAM debug visualization.
     sam_show_windows: bool
@@ -199,6 +200,7 @@ def load_params(ns: str = "~") -> PerceptionParams:
             _p("sam_max_cluster_extent_multiplier", 2.8)),
         sam_max_cluster_volume_multiplier=float(
             _p("sam_max_cluster_volume_multiplier", 7.0)),
+        n_stack_cube_cloud=max(1, int(_p("n_stack_cube_cloud", 1))),
 
         # SAM debug visualization.
         sam_show_windows=bool(_p("sam_show_windows", True)),

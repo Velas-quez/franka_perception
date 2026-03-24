@@ -3,7 +3,7 @@
 
 import copy
 import threading
-from typing import Optional, Iterable
+from typing import Iterable, List, Optional, Tuple
 
 import numpy as np
 import rospy
@@ -34,6 +34,9 @@ class DynamicListenerNode:
             raise ValueError("Invalid ~pipeline_mode. Use 'classic' or 'sam_rgbd'.")
         if self.pipeline_mode == "sam_rgbd" and not self.params.use_rgbd:
             raise ValueError("pipeline_mode=sam_rgbd requires ~use_rgbd:=true")
+        self._target_rgbd_frames = (
+            self.params.n_stack_cube_cloud if self.pipeline_mode == "sam_rgbd" else 1
+        )
 
         self.pipeline = None
         self.sam_pipeline = None
@@ -71,6 +74,7 @@ class DynamicListenerNode:
                 sam_max_cluster_extent_multiplier=self.params.sam_max_cluster_extent_multiplier,
                 sam_max_cluster_volume_multiplier=self.params.sam_max_cluster_volume_multiplier,
                 support_plane_constraint=self.params.support_plane_constraint,
+                n_stack_cube_cloud=self.params.n_stack_cube_cloud,
             )
         else:
             self.pipeline = CubeDetectionPipeline(
@@ -90,6 +94,7 @@ class DynamicListenerNode:
         self._rgb_msg: Optional[Image] = None
         self._depth_msg: Optional[Image] = None
         self._camera_info_msg: Optional[CameraInfo] = None
+        self._rgbd_frames: List[Tuple[Image, Image, CameraInfo, Header]] = []
         self._latest_header: Optional[Header] = None
         self._cloud_ready = threading.Event()
         self._lock = threading.Lock()
@@ -115,9 +120,10 @@ class DynamicListenerNode:
             self._sync = message_filters.ApproximateTimeSynchronizer(
                 [self._rgb_sub, self._depth_sub, self._info_sub], queue_size=5, slop=0.2)
             self._sync.registerCallback(self._rgbd_cb)
-            rospy.loginfo("Listening for RGB-D on %s + %s + %s (mode=%s)",
+            rospy.loginfo("Listening for RGB-D on %s + %s + %s (mode=%s, batch_frames=%d)",
                           self.params.rgb_topic, self.params.depth_topic,
-                          self.params.camera_info_topic, self.pipeline_mode)
+                          self.params.camera_info_topic, self.pipeline_mode,
+                          self._target_rgbd_frames)
         else:
             self._cloud_sub = rospy.Subscriber(
                 self.params.cloud_topic, PointCloud2, self._cloud_cb, queue_size=1)
@@ -153,11 +159,21 @@ class DynamicListenerNode:
 
         if self.pipeline_mode == "sam_rgbd":
             with self._lock:
+                if len(self._rgbd_frames) >= self._target_rgbd_frames:
+                    return
                 self._rgb_msg = rgb_msg
                 self._depth_msg = depth_msg
                 self._camera_info_msg = info_msg
                 self._latest_header = depth_msg.header
-                self._cloud_ready.set()
+                self._rgbd_frames.append((rgb_msg, depth_msg, info_msg, depth_msg.header))
+                captured_frames = len(self._rgbd_frames)
+                if captured_frames >= self._target_rgbd_frames:
+                    self._cloud_ready.set()
+            rospy.loginfo(
+                "Captured RGB-D cloud %d/%d for SAM batch",
+                captured_frames,
+                self._target_rgbd_frames,
+            )
             return
 
         if not has_points(reconstructed_points):
@@ -181,7 +197,11 @@ class DynamicListenerNode:
         self._reconstructed_cloud_pub.publish(cloud_msg)
 
     def run(self) -> None:
-        rospy.loginfo("Waiting for point clouds...")
+        if self.pipeline_mode == "sam_rgbd":
+            rospy.loginfo("Waiting for RGB-D batches with %d synchronized frames...",
+                          self._target_rgbd_frames)
+        else:
+            rospy.loginfo("Waiting for point clouds...")
         while not rospy.is_shutdown():
             if not self._cloud_ready.wait(timeout=0.2):
                 continue
@@ -192,22 +212,34 @@ class DynamicListenerNode:
                 depth_msg = self._depth_msg
                 info_msg = self._camera_info_msg
                 header = self._latest_header
+                rgbd_frames = list(self._rgbd_frames)
+                self._rgbd_frames.clear()
                 self._cloud_ready.clear()
 
             if self.pipeline_mode == "sam_rgbd":
-                if rgb_msg is None or depth_msg is None or info_msg is None:
-                    rospy.logwarn("No valid synchronized RGB-D frame received; waiting for next")
+                if not rgbd_frames:
+                    rospy.logwarn("No valid synchronized RGB-D batch received; waiting for next")
                     continue
                 depth_scale = self.params.depth_scale if self.params.depth_scale > 0.0 else None
-                result = self.sam_pipeline.process(
-                    rgb_msg,
-                    depth_msg,
-                    info_msg,
-                    depth_scale=depth_scale,
-                    depth_trunc=self.params.depth_trunc,
-                    flip=self.params.rgbd_flip,
-                    stop_after="all",
-                )
+                self.sam_pipeline.reset_stack_history()
+                result = None
+                batch_size = len(rgbd_frames)
+                for frame_idx, (frame_rgb_msg, frame_depth_msg, frame_info_msg, frame_header) in enumerate(rgbd_frames, start=1):
+                    rospy.loginfo("Processing SAM batch frame %d/%d", frame_idx, batch_size)
+                    result = self.sam_pipeline.process(
+                        frame_rgb_msg,
+                        frame_depth_msg,
+                        frame_info_msg,
+                        depth_scale=depth_scale,
+                        depth_trunc=self.params.depth_trunc,
+                        flip=self.params.rgbd_flip,
+                        stop_after="all",
+                    )
+                    header = frame_header
+
+                if result is None:
+                    rospy.logwarn("SAM batch processing did not produce a result; waiting for next")
+                    continue
             else:
                 if not has_points(points):
                     rospy.logwarn("No valid point cloud received; waiting for next")

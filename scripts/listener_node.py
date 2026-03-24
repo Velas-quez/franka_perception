@@ -2,7 +2,7 @@
 """Render point-cloud and RGB-D inputs with Open3D using the shared pipeline."""
 
 import threading
-from typing import Optional
+from typing import List, Optional, Tuple
 
 import numpy as np
 import rospy
@@ -35,6 +35,9 @@ class SingleCloudNode:
         self.show_input_clouds = bool(rospy.get_param("~show_input_clouds", False))
         if self.pipeline_mode == "sam_rgbd" and not self.params.use_rgbd:
             raise ValueError("pipeline_mode=sam_rgbd requires ~use_rgbd:=true")
+        self._target_rgbd_frames = (
+            self.params.n_stack_cube_cloud if self.pipeline_mode == "sam_rgbd" else 1
+        )
 
         self.pipeline = None
         self.sam_pipeline = None
@@ -72,6 +75,7 @@ class SingleCloudNode:
                 sam_max_cluster_extent_multiplier=self.params.sam_max_cluster_extent_multiplier,
                 sam_max_cluster_volume_multiplier=self.params.sam_max_cluster_volume_multiplier,
                 support_plane_constraint=self.params.support_plane_constraint,
+                n_stack_cube_cloud=self.params.n_stack_cube_cloud,
             )
         else:
             self.pipeline = CubeDetectionPipeline(
@@ -92,6 +96,7 @@ class SingleCloudNode:
         self._rgb_msg: Optional[Image] = None
         self._depth_msg: Optional[Image] = None
         self._camera_info_msg: Optional[CameraInfo] = None
+        self._rgbd_frames: List[Tuple[Image, Image, CameraInfo]] = []
         self._cloud_ready = threading.Event()
         self._lock = threading.Lock()
 
@@ -124,13 +129,7 @@ class SingleCloudNode:
         has_cloud_topic = has_points(self._cloud_topic_points)
         has_rgbd_cloud = has_points(self._rgbd_points)
         if self.pipeline_mode == "sam_rgbd":
-            return (
-                has_cloud_topic
-                and has_rgbd_cloud
-                and self._rgb_msg is not None
-                and self._depth_msg is not None
-                and self._camera_info_msg is not None
-            )
+            return has_cloud_topic and len(self._rgbd_frames) >= self._target_rgbd_frames
         return has_cloud_topic and has_rgbd_cloud
 
     def _cloud_cb(self, msg: PointCloud2) -> None:
@@ -181,18 +180,42 @@ class SingleCloudNode:
         if not has_points(points):
             rospy.logwarn("Received empty/invalid RGB-D; ignoring")
             return
+
+        captured_frames = 1
+        should_unregister = False
         with self._lock:
-            if has_points(self._rgbd_points):
-                return
-            self._rgbd_points = points
             if self.pipeline_mode == "sam_rgbd":
+                if len(self._rgbd_frames) >= self._target_rgbd_frames:
+                    return
+                self._rgbd_points = points
                 self._rgb_msg = rgb_msg
                 self._depth_msg = depth_msg
                 self._camera_info_msg = info_msg
+                self._rgbd_frames.append((rgb_msg, depth_msg, info_msg))
+                captured_frames = len(self._rgbd_frames)
+                should_unregister = captured_frames >= self._target_rgbd_frames
+            else:
+                if has_points(self._rgbd_points):
+                    return
+                self._rgbd_points = points
+                captured_frames = 1
+                should_unregister = True
+
             if self._ready_locked():
                 self._cloud_ready.set()
-        rospy.loginfo("Captured RGB-D cloud with %d points", points.shape[0])
-        self._unregister_rgbd_subscribers()
+
+        if self.pipeline_mode == "sam_rgbd":
+            rospy.loginfo(
+                "Captured RGB-D cloud %d/%d with %d points",
+                captured_frames,
+                self._target_rgbd_frames,
+                points.shape[0],
+            )
+        else:
+            rospy.loginfo("Captured RGB-D cloud with %d points", points.shape[0])
+
+        if should_unregister:
+            self._unregister_rgbd_subscribers()
 
     def _unregister_rgbd_subscribers(self) -> None:
         for sub in (self._rgb_sub, self._depth_sub):
@@ -208,7 +231,13 @@ class SingleCloudNode:
             pass
 
     def run(self) -> None:
-        rospy.loginfo("Waiting for one valid point-cloud topic frame and one valid RGB-D cloud...")
+        if self.pipeline_mode == "sam_rgbd":
+            rospy.loginfo(
+                "Waiting for one valid point-cloud topic frame and %d synchronized RGB-D frames...",
+                self._target_rgbd_frames,
+            )
+        else:
+            rospy.loginfo("Waiting for one valid point-cloud topic frame and one valid RGB-D cloud...")
         while not rospy.is_shutdown():
             if self._cloud_ready.wait(timeout=0.2):
                 break
@@ -225,22 +254,36 @@ class SingleCloudNode:
             rgb_msg = self._rgb_msg
             depth_msg = self._depth_msg
             info_msg = self._camera_info_msg
+            rgbd_frames = list(self._rgbd_frames)
 
         rospy.loginfo("Rendering pipeline stage: %s", self.stage)
         if self.pipeline_mode == "sam_rgbd":
-            if rgb_msg is None or depth_msg is None or info_msg is None:
+            if not rgbd_frames:
                 rospy.logerr("No valid synchronized RGB-D frame received before shutdown")
                 return
             depth_scale = self.params.depth_scale if self.params.depth_scale > 0.0 else None
-            result = self.sam_pipeline.process(
-                rgb_msg,
-                depth_msg,
-                info_msg,
-                depth_scale=depth_scale,
-                depth_trunc=self.params.depth_trunc,
-                flip=self.params.rgbd_flip,
-                stop_after=self.stage,
-            )
+            result = None
+            for frame_idx, (frame_rgb_msg, frame_depth_msg, frame_info_msg) in enumerate(rgbd_frames, start=1):
+                rospy.loginfo(
+                    "Processing stacked SAM frame %d/%d",
+                    frame_idx,
+                    len(rgbd_frames),
+                )
+                result = self.sam_pipeline.process(
+                    frame_rgb_msg,
+                    frame_depth_msg,
+                    frame_info_msg,
+                    depth_scale=depth_scale,
+                    depth_trunc=self.params.depth_trunc,
+                    flip=self.params.rgbd_flip,
+                    stop_after=self.stage,
+                )
+                rgb_msg = frame_rgb_msg
+
+            if result is None:
+                rospy.logerr("SAM pipeline did not produce a result")
+                return
+
             if self.params.sam_show_windows and result.sam_rgb_image is not None:
                 rgb_arr = np.asarray(result.sam_rgb_image)
                 finite = np.isfinite(rgb_arr)

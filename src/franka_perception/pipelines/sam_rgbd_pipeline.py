@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """RGB-D cube pipeline that uses SAM masks as pre-clustered cube candidates."""
 
-from typing import List, Optional
+from collections import deque
+from typing import Deque, List, Optional, Tuple
 
 import numpy as np
 import open3d as o3d
@@ -49,7 +50,8 @@ class SamRgbdCubeDetectionPipeline:
                  sam_min_mask_plane_height: float = 0.012,
                  sam_max_cluster_extent_multiplier: float = 2.8,
                  sam_max_cluster_volume_multiplier: float = 7.0,
-                 support_plane_constraint: str = "fix_icp") -> None:
+                 support_plane_constraint: str = "fix_icp",
+                 n_stack_cube_cloud: int = 1) -> None:
         self.cube_side_length = cube_side_length
         self.voxel_size = voxel_size
         self.max_cubes_per_cluster = max_cubes_per_cluster
@@ -69,6 +71,8 @@ class SamRgbdCubeDetectionPipeline:
         self.sam_max_cluster_extent_multiplier = sam_max_cluster_extent_multiplier
         self.sam_max_cluster_volume_multiplier = sam_max_cluster_volume_multiplier
         self.support_plane_constraint = support_plane_constraint
+        self.n_stack_cube_cloud = max(1, int(n_stack_cube_cloud))
+        self._stacked_cluster_history: Deque[List[Tuple[np.ndarray, np.ndarray]]] = deque()
         self.segmenter = SamSegmenter(
             mode=sam_mode,
             checkpoint_path=sam_checkpoint_path,
@@ -102,6 +106,121 @@ class SamRgbdCubeDetectionPipeline:
         merged = o3d.geometry.PointCloud()
         merged.points = o3d.utility.Vector3dVector(np.vstack(all_points))
         return merged
+
+    @staticmethod
+    def _cluster_points(cluster: o3d.geometry.PointCloud) -> np.ndarray:
+        return np.asarray(cluster.points, dtype=np.float64).copy()
+
+    @staticmethod
+    def _cluster_centroid(points: np.ndarray) -> np.ndarray:
+        return np.mean(points, axis=0, dtype=np.float64)
+
+    def _match_historical_clusters(self,
+                                   current_centroids: List[np.ndarray],
+                                   historical_frame: List[Tuple[np.ndarray, np.ndarray]],
+                                   max_centroid_distance: float) -> List[Optional[np.ndarray]]:
+        matches: List[Optional[np.ndarray]] = [None] * len(current_centroids)
+        if not historical_frame:
+            return matches
+
+        candidate_pairs = []
+        for current_idx, current_centroid in enumerate(current_centroids):
+            for history_idx, (history_points, history_centroid) in enumerate(historical_frame):
+                if history_points.size == 0:
+                    continue
+                distance = float(np.linalg.norm(current_centroid - history_centroid))
+                if distance <= max_centroid_distance:
+                    candidate_pairs.append((distance, current_idx, history_idx))
+
+        if not candidate_pairs:
+            return matches
+
+        candidate_pairs.sort(key=lambda item: item[0])
+        used_currents = set()
+        used_history = set()
+        for _, current_idx, history_idx in candidate_pairs:
+            if current_idx in used_currents or history_idx in used_history:
+                continue
+            matches[current_idx] = historical_frame[history_idx][0]
+            used_currents.add(current_idx)
+            used_history.add(history_idx)
+        return matches
+
+    def _fuse_clusters_with_history(self,
+                                    clusters: List[o3d.geometry.PointCloud]) -> List[o3d.geometry.PointCloud]:
+        if (
+            self.n_stack_cube_cloud <= 1
+            or not clusters
+            or not self._stacked_cluster_history
+        ):
+            return clusters
+
+        current_points = [self._cluster_points(cluster) for cluster in clusters]
+        current_centroids = [self._cluster_centroid(points) for points in current_points]
+        fused_point_sets = [[points] for points in current_points]
+        max_centroid_distance = max(
+            float(self.cube_side_length) * 0.75,
+            float(self.voxel_size) * 4.0,
+        )
+
+        for historical_frame in self._stacked_cluster_history:
+            matches = self._match_historical_clusters(
+                current_centroids,
+                historical_frame,
+                max_centroid_distance,
+            )
+            for cluster_idx, history_points in enumerate(matches):
+                if history_points is not None and history_points.size > 0:
+                    fused_point_sets[cluster_idx].append(history_points)
+
+        fused_clusters = []
+        min_cluster_points = max(1, int(self.sam_min_points_per_cluster))
+        for cluster, point_set in zip(clusters, fused_point_sets):
+            fused_points = np.vstack(point_set)
+            fused_cluster = self._to_pcd(fused_points)
+            if self.voxel_size > 0.0 and len(fused_cluster.points) > 0:
+                fused_cluster = fused_cluster.voxel_down_sample(self.voxel_size)
+            try:
+                fused_cluster, _ = fused_cluster.remove_statistical_outlier(
+                    nb_neighbors=20, std_ratio=2.0)
+            except RuntimeError:
+                pass
+            if len(fused_cluster.points) < min_cluster_points:
+                fused_clusters.append(cluster)
+            else:
+                fused_clusters.append(fused_cluster)
+        return fused_clusters
+
+    def _build_cluster_boxes(self,
+                             clusters: List[o3d.geometry.PointCloud]) -> List[o3d.geometry.OrientedBoundingBox]:
+        boxes = []
+        for cluster in clusters:
+            if len(cluster.points) == 0:
+                continue
+            box = cluster.get_oriented_bounding_box()
+            box.color = (0.0, 1.0, 0.0)
+            boxes.append(box)
+        return boxes
+
+    def reset_stack_history(self) -> None:
+        self._stacked_cluster_history.clear()
+
+    def _update_cluster_history(self, clusters: List[o3d.geometry.PointCloud]) -> None:
+        if self.n_stack_cube_cloud <= 1:
+            self._stacked_cluster_history.clear()
+            return
+
+        history_frame = []
+        for cluster in clusters:
+            points = self._cluster_points(cluster)
+            if points.size == 0:
+                continue
+            history_frame.append((points, self._cluster_centroid(points)))
+        self._stacked_cluster_history.append(history_frame)
+
+        max_history = self.n_stack_cube_cloud - 1
+        while len(self._stacked_cluster_history) > max_history:
+            self._stacked_cluster_history.popleft()
 
     def process(self,
                 rgb_msg,
@@ -178,8 +297,6 @@ class SamRgbdCubeDetectionPipeline:
         print(f"SAM masks: generated={len(sam_masks)} kept={len(selected_masks)}")
 
         clusters: List[o3d.geometry.PointCloud] = []
-        cluster_boxes = []
-        eroded_masks: List[np.ndarray] = []
         viz_masks: List[np.ndarray] = []
         for mask in selected_masks:
             clean_mask = erode_mask(
@@ -252,12 +369,13 @@ class SamRgbdCubeDetectionPipeline:
                 print(f"Rejecting SAM mask by volume={volume:.6f}m^3")
                 continue
 
-            obb.color = (0.0, 1.0, 0.0)
             clusters.append(cluster)
-            cluster_boxes.append(obb)
-            eroded_masks.append(clean_mask)
 
-        cluster_cloud = self._merge_clouds(clusters)
+        estimation_clusters = self._fuse_clusters_with_history(clusters)
+        cluster_cloud = self._merge_clouds(estimation_clusters)
+        cluster_boxes = self._build_cluster_boxes(estimation_clusters)
+        self._update_cluster_history(clusters)
+
         if len(cluster_cloud.points) == 0:
             cluster_cloud = original_cloud
 
@@ -300,7 +418,7 @@ class SamRgbdCubeDetectionPipeline:
         plane_obbs = []
         cubes: List[CubeEstimate] = []
         failed_initial_meshes = []
-        for cluster in clusters:
+        for cluster in estimation_clusters:
             estimates, obbs, failed_inits = fit_cubes_in_cluster(
                 cluster,
                 cube_side_length=self.cube_side_length,

@@ -9,6 +9,7 @@
   <arg name="use_rgbd" default="true" doc="Use RGB-D topics instead of PointCloud2" />
   <arg name="support_plane_constraint" default="ajust" doc="Support-plane mode for cube fitting: fix_icp|ajust|none" />
   <arg name="rgbd_flip" default="false" doc="Flip RGB-D cloud axes for Open3D-style visualization only" />
+  <arg name="n_stack_cube_cloud" default="1" doc="Fuse this many consecutive SAM-masked cube clouds before estimating cube poses" />
   <arg name="enviroment" default="simulation" doc="poseidon|atena|simulation (defines the input topics)" />
 
   <node pkg="franka_perception_thiago"
@@ -22,6 +23,7 @@
     <param name="use_rgbd"             value="$(arg use_rgbd)" />
     <param name="support_plane_constraint" value="$(arg support_plane_constraint)" />
     <param name="rgbd_flip"            value="$(arg rgbd_flip)" />
+    <param name="n_stack_cube_cloud"   value="$(arg n_stack_cube_cloud)" />
     <param name="sam_mode"             value="$(arg sam_mode)" />
     <param name="sam_checkpoint_path"  value="$(arg sam_checkpoint_path)" />
     <param name="sam_prompt_text"      value="$(arg sam_prompt_text)" />
