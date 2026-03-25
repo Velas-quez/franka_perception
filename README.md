@@ -1,23 +1,36 @@
-
-roslaunch franka_perception_thiago dynamic_listener.launch enviroment:=atena n_stack_cube_cloud:=4
-pip install --force-reinstall --no-cache-dir open3d
-python3 -m pip install -e "src/local_src/my_package/franka_perception-master/franka_perception-master[sam]"
-python3 -m pip install -e src/local_src/my_package/franka_perception-master/franka_perception-master
-pip install open3d
+# Quick Start on Athena Robot
+```bash
+source /opt/ros/noetic/setup.bash
+source devel/setup.bash
+rosdep update
 rosdep install --from-paths src --ignore-src -r -y
-
-roslaunch zed_wrapper zed2i.launch
-
-roslaunch zed_wrapper zed2i.launch \
-    camera_name:=zed2 \
-    node_name:=zed_node \
-    confidence:=50 \
-    texture_confidence:=10 \
-    depth_stabilization:=1
-
+python3 -m pip install --upgrade pip
+python3 -m pip install -e src/local_src/my_package/franka_perception-master/franka_perception-master
+python3 -m pip install -e "src/local_src/my_package/franka_perception-master/franka_perception-master[sam]"
+python3 -m pip install open3d
+catkin_make
+source devel/setup.bash
+```
+(if problems with o3d)
+```bash
+pip install --force-reinstall --no-cache-dir open3d
+pip install --force-reinstall pyyaml
+```
+### Start perception Node
+```bash
+roslaunch franka_perception_thiago dynamic_listener.launch enviroment:=atena n_stack_cube_cloud:=4
+```
+### Start MoveIt + Zed Camera
+```bash
 roslaunch panda_moveit_config franka_control.launch robot_ip:=10.10.10.10
 
+roslaunch zed_wrapper zed2i.launch
+```
+### Camera Calibration
+```bash
 rosrun tf static_transform_publisher 1.145 -0.02 0.49 -0.3713077586971122 -0.0192055737257127 0.9282693967427805 0.008810297383609828 world zed2i_camera_center 100
+```
+
 
 # franka_perception
 
