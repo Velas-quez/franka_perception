@@ -86,6 +86,7 @@ class SingleCloudNode:
                 sam_min_mask_plane_height=self.params.sam_min_mask_plane_height,
                 sam_max_cluster_extent_multiplier=self.params.sam_max_cluster_extent_multiplier,
                 sam_max_cluster_volume_multiplier=self.params.sam_max_cluster_volume_multiplier,
+                sam_rerun_on_extent_rejection=self.params.sam_rerun_on_extent_rejection,
                 support_plane_constraint=self.params.support_plane_constraint,
                 n_stack_cube_cloud=self.params.n_stack_cube_cloud,
                 sam_batch_consistency_ratio=self.params.sam_batch_consistency_ratio,

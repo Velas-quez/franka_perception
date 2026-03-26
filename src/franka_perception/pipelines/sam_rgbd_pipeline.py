@@ -12,7 +12,7 @@ from franka_perception.pipelines.result_type import CubeDetectionResult
 from ..core.cloud_io import depth_to_xyz, rgbd_msgs_to_numpy
 from ..core.open3d_backend import voxel_downsample_legacy_point_cloud
 from ..geometry.cube_fitting import CubeEstimate, fit_cubes_in_cluster, select_best_cubes
-from ..geometry.sam_masking import SamSegmenter, erode_mask, select_mask_candidates
+from ..geometry.sam_masking import SamMask, SamSegmenter, erode_mask, select_mask_candidates
 from ..render.sam_visualization import build_mask_overlay
 
 
@@ -70,6 +70,7 @@ class SamRgbdCubeDetectionPipeline:
                  sam_min_mask_plane_height: float = 0.012,
                  sam_max_cluster_extent_multiplier: float = 2.8,
                  sam_max_cluster_volume_multiplier: float = 7.0,
+                 sam_rerun_on_extent_rejection: bool = False,
                  support_plane_constraint: str = "fix_icp",
                  n_stack_cube_cloud: int = 1,
                  sam_batch_consistency_ratio: float = 1.0,
@@ -92,6 +93,7 @@ class SamRgbdCubeDetectionPipeline:
         self.sam_min_mask_plane_height = sam_min_mask_plane_height
         self.sam_max_cluster_extent_multiplier = sam_max_cluster_extent_multiplier
         self.sam_max_cluster_volume_multiplier = sam_max_cluster_volume_multiplier
+        self.sam_rerun_on_extent_rejection = bool(sam_rerun_on_extent_rejection)
         self.support_plane_constraint = support_plane_constraint
         self.n_stack_cube_cloud = max(1, int(n_stack_cube_cloud))
         self.sam_batch_consistency_ratio = min(
@@ -100,6 +102,8 @@ class SamRgbdCubeDetectionPipeline:
         self.sam_batch_mask_iou_threshold = 0.35
         self.sam_batch_mask_dilation_kernel = 3
         self.sam_batch_mask_dilation_iterations = 1
+        self.sam_extent_rerun_max_attempts = 3
+        self.sam_extent_rerun_crop_padding = 8
         self.segmenter = SamSegmenter(
             mode=sam_mode,
             checkpoint_path=sam_checkpoint_path,
@@ -165,6 +169,229 @@ class SamRgbdCubeDetectionPipeline:
             return 0.0
         intersection = int(np.count_nonzero(first_mask & second_mask))
         return float(intersection) / float(union)
+
+    @staticmethod
+    def _mask_bbox(mask: np.ndarray) -> Optional[Tuple[int, int, int, int]]:
+        ys, xs = np.nonzero(mask)
+        if ys.size == 0 or xs.size == 0:
+            return None
+        return int(xs.min()), int(ys.min()), int(xs.max()) + 1, int(ys.max()) + 1
+
+    @staticmethod
+    def _merge_box_batches(box_batches: Sequence[np.ndarray]) -> np.ndarray:
+        valid_batches = []
+        for boxes in box_batches:
+            arr = np.asarray(boxes, dtype=np.float32)
+            if arr.size == 0:
+                continue
+            valid_batches.append(arr.reshape((-1, 4)))
+        if not valid_batches:
+            return np.zeros((0, 4), dtype=np.float32)
+        return np.vstack(valid_batches).astype(np.float32, copy=False)
+
+    def _rerun_segmenter_for_extent_mask(self,
+                                         rgb_image: np.ndarray,
+                                         depth_m: np.ndarray,
+                                         rejected_mask: np.ndarray,
+                                         *,
+                                         attempt_idx: int) -> Tuple[List[SamMask], np.ndarray]:
+        bbox = self._mask_bbox(rejected_mask)
+        if bbox is None:
+            print(
+                f"Extent re-segmentation skipped: empty mask on attempt={attempt_idx}/{self.sam_extent_rerun_max_attempts}"
+            )
+            return [], np.zeros((0, 4), dtype=np.float32)
+
+        x0, y0, x1, y1 = bbox
+        pad = int(self.sam_extent_rerun_crop_padding)
+        height, width = rejected_mask.shape[:2]
+        x0 = max(0, x0 - pad)
+        y0 = max(0, y0 - pad)
+        x1 = min(width, x1 + pad)
+        y1 = min(height, y1 + pad)
+        if x1 <= x0 or y1 <= y0:
+            print(
+                f"Extent re-segmentation skipped: invalid ROI on attempt={attempt_idx}/{self.sam_extent_rerun_max_attempts}"
+            )
+            return [], np.zeros((0, 4), dtype=np.float32)
+
+        rgb_crop = rgb_image[y0:y1, x0:x1]
+        depth_crop = depth_m[y0:y1, x0:x1]
+        print(
+            "Re-running DINO/SAM for extent-rejected mask: "
+            f"attempt={attempt_idx}/{self.sam_extent_rerun_max_attempts} roi=({x0},{y0})-({x1},{y1})"
+        )
+        crop_masks = self.segmenter.generate(
+            rgb_crop,
+            max_masks=self.sam_max_masks,
+            min_mask_pixels=self.sam_min_mask_pixels,
+        )
+        crop_boxes = np.asarray(self.segmenter.get_last_boxes(), dtype=np.float32)
+        selected_crop_masks = select_mask_candidates(
+            crop_masks,
+            depth_crop,
+            max_masks=self.sam_max_masks,
+            min_depth_pixels=self.sam_min_depth_pixels,
+        )
+        print(
+            "Extent re-segmentation result: "
+            f"generated={len(crop_masks)} kept={len(selected_crop_masks)} "
+            f"attempt={attempt_idx}/{self.sam_extent_rerun_max_attempts}"
+        )
+
+        remapped_masks: List[SamMask] = []
+        for crop_mask in selected_crop_masks:
+            full_mask = np.zeros_like(rejected_mask, dtype=bool)
+            full_mask[y0:y1, x0:x1] = np.asarray(crop_mask.segmentation, dtype=bool)
+            remapped_masks.append(SamMask(
+                segmentation=full_mask,
+                area=int(np.count_nonzero(full_mask)),
+                score=float(crop_mask.score),
+            ))
+
+        if crop_boxes.size == 0:
+            remapped_boxes = np.zeros((0, 4), dtype=np.float32)
+        else:
+            remapped_boxes = crop_boxes.reshape((-1, 4)).astype(np.float32, copy=True)
+            remapped_boxes[:, [0, 2]] += float(x0)
+            remapped_boxes[:, [1, 3]] += float(y0)
+
+        return remapped_masks, remapped_boxes
+
+    def _process_selected_masks(self,
+                                selected_masks: Sequence[SamMask],
+                                rgb_image: np.ndarray,
+                                depth_m: np.ndarray,
+                                camera_info_msg,
+                                *,
+                                depth_trunc: float,
+                                flip: bool,
+                                plane_model: Optional[np.ndarray],
+                                dino_box_batches: List[np.ndarray],
+                                rerun_depth: int = 0) -> Tuple[List[np.ndarray], List[_SamMaskCandidate]]:
+        candidates: List[_SamMaskCandidate] = []
+        viz_masks: List[np.ndarray] = []
+
+        for mask in selected_masks:
+            clean_mask = erode_mask(
+                mask.segmentation,
+                kernel_size=self.sam_mask_erosion_kernel,
+                iterations=self.sam_mask_erosion_iterations,
+            )
+            area_ratio = float(clean_mask.sum()) / float(clean_mask.size)
+            if area_ratio > float(self.sam_max_mask_area_ratio):
+                print(f"Rejecting SAM mask by area ratio={area_ratio:.3f}")
+                continue
+
+            points = depth_to_xyz(
+                depth_m,
+                camera_info_msg,
+                mask=clean_mask,
+                depth_trunc=depth_trunc,
+                flip=flip,
+            )
+            if points.shape[0] < self.sam_min_points_per_cluster:
+                continue
+
+            is_above_identified_plane = False
+            if plane_model is not None:
+                n = plane_model[:3]
+                n_norm = np.linalg.norm(n)
+                if n_norm > 1e-9:
+                    distances = np.abs((points @ n + plane_model[3]) / n_norm)
+                    near_ratio = float(np.mean(
+                        distances < float(self.sam_near_plane_distance)))
+                    p95_height = float(np.percentile(distances, 95.0))
+                    if near_ratio > float(self.sam_max_near_plane_ratio):
+                        print(f"Rejecting SAM mask by near-plane ratio={near_ratio:.3f}")
+                        continue
+                    if p95_height < float(self.sam_min_mask_plane_height):
+                        print(f"Rejecting SAM mask by low height p95={p95_height:.4f}m")
+                        continue
+                    is_above_identified_plane = True
+                    points = points[distances >= float(self.sam_near_plane_distance)]
+                    if points.shape[0] < self.sam_min_points_per_cluster:
+                        continue
+
+            cluster = self._to_pcd(points)
+            if self.voxel_size > 0.0 and len(cluster.points) > 0:
+                cluster = voxel_downsample_legacy_point_cloud(
+                    cluster,
+                    self.voxel_size,
+                    device=self.open3d_device,
+                )
+            if len(cluster.points) < self.sam_min_points_per_cluster:
+                continue
+
+            try:
+                cluster, _ = cluster.remove_statistical_outlier(
+                    nb_neighbors=20, std_ratio=2.0)
+            except RuntimeError:
+                pass
+            if len(cluster.points) < self.sam_min_points_per_cluster:
+                continue
+
+            obb = cluster.get_oriented_bounding_box()
+            extents = np.asarray(obb.extent, dtype=np.float64)
+            max_extent = float(np.max(extents))
+            volume = float(np.prod(extents))
+            cube_extent_limit = float(self.cube_side_length) * float(
+                self.sam_max_cluster_extent_multiplier)
+            cube_volume_limit = float(self.cube_side_length ** 3) * float(
+                self.sam_max_cluster_volume_multiplier)
+            if max_extent > cube_extent_limit:
+                print(f"Rejecting SAM mask by extent={max_extent:.4f}m")
+                if (
+                    self.sam_rerun_on_extent_rejection
+                    and is_above_identified_plane
+                    and rerun_depth < self.sam_extent_rerun_max_attempts
+                ):
+                    attempt_idx = rerun_depth + 1
+                    rerun_masks, rerun_boxes = self._rerun_segmenter_for_extent_mask(
+                        rgb_image,
+                        depth_m,
+                        clean_mask,
+                        attempt_idx=attempt_idx,
+                    )
+                    if rerun_boxes.size > 0:
+                        dino_box_batches.append(rerun_boxes)
+                    if rerun_masks:
+                        retry_viz_masks, retry_candidates = self._process_selected_masks(
+                            rerun_masks,
+                            rgb_image,
+                            depth_m,
+                            camera_info_msg,
+                            depth_trunc=depth_trunc,
+                            flip=flip,
+                            plane_model=plane_model,
+                            dino_box_batches=dino_box_batches,
+                            rerun_depth=rerun_depth + 1,
+                        )
+                        viz_masks.extend(retry_viz_masks)
+                        candidates.extend(retry_candidates)
+                    else:
+                        print(
+                            "Extent re-segmentation produced no reusable masks: "
+                            f"attempt={attempt_idx}/{self.sam_extent_rerun_max_attempts}"
+                        )
+                elif self.sam_rerun_on_extent_rejection and is_above_identified_plane:
+                    print(
+                        "Extent re-segmentation limit reached; keeping mask rejected "
+                        f"(max_attempts={self.sam_extent_rerun_max_attempts})"
+                    )
+                continue
+            if volume > cube_volume_limit:
+                print(f"Rejecting SAM mask by volume={volume:.6f}m^3")
+                continue
+
+            viz_masks.append(clean_mask)
+            candidates.append(_SamMaskCandidate(
+                segmentation=clean_mask,
+                cluster=cluster,
+                centroid=self._cluster_centroid(np.asarray(cluster.points, dtype=np.float64)),
+            ))
+
+        return viz_masks, candidates
 
     def _build_none_result(self,
                            rgb_msg,
@@ -241,7 +468,7 @@ class SamRgbdCubeDetectionPipeline:
             max_masks=self.sam_max_masks,
             min_mask_pixels=self.sam_min_mask_pixels,
         )
-        dino_boxes = self.segmenter.get_last_boxes()
+        dino_box_batches = [self.segmenter.get_last_boxes()]
         selected_masks = select_mask_candidates(
             sam_masks,
             depth_m,
@@ -250,86 +477,17 @@ class SamRgbdCubeDetectionPipeline:
         )
         print(f"SAM masks: generated={len(sam_masks)} kept={len(selected_masks)}")
 
-        candidates: List[_SamMaskCandidate] = []
-        viz_masks: List[np.ndarray] = []
-        for mask in selected_masks:
-            clean_mask = erode_mask(
-                mask.segmentation,
-                kernel_size=self.sam_mask_erosion_kernel,
-                iterations=self.sam_mask_erosion_iterations,
-            )
-            area_ratio = float(clean_mask.sum()) / float(clean_mask.size)
-            if area_ratio > float(self.sam_max_mask_area_ratio):
-                print(f"Rejecting SAM mask by area ratio={area_ratio:.3f}")
-                continue
-
-            points = depth_to_xyz(
-                depth_m,
-                camera_info_msg,
-                mask=clean_mask,
-                depth_trunc=depth_trunc,
-                flip=flip,
-            )
-            if points.shape[0] < self.sam_min_points_per_cluster:
-                continue
-
-            if plane_model is not None:
-                n = plane_model[:3]
-                n_norm = np.linalg.norm(n)
-                if n_norm > 1e-9:
-                    distances = np.abs((points @ n + plane_model[3]) / n_norm)
-                    near_ratio = float(np.mean(
-                        distances < float(self.sam_near_plane_distance)))
-                    p95_height = float(np.percentile(distances, 95.0))
-                    if near_ratio > float(self.sam_max_near_plane_ratio):
-                        print(f"Rejecting SAM mask by near-plane ratio={near_ratio:.3f}")
-                        continue
-                    if p95_height < float(self.sam_min_mask_plane_height):
-                        print(f"Rejecting SAM mask by low height p95={p95_height:.4f}m")
-                        continue
-                    points = points[distances >= float(self.sam_near_plane_distance)]
-                    if points.shape[0] < self.sam_min_points_per_cluster:
-                        continue
-
-            cluster = self._to_pcd(points)
-            if self.voxel_size > 0.0 and len(cluster.points) > 0:
-                cluster = voxel_downsample_legacy_point_cloud(
-                    cluster,
-                    self.voxel_size,
-                    device=self.open3d_device,
-                )
-            if len(cluster.points) < self.sam_min_points_per_cluster:
-                continue
-
-            try:
-                cluster, _ = cluster.remove_statistical_outlier(
-                    nb_neighbors=20, std_ratio=2.0)
-            except RuntimeError:
-                pass
-            if len(cluster.points) < self.sam_min_points_per_cluster:
-                continue
-
-            obb = cluster.get_oriented_bounding_box()
-            extents = np.asarray(obb.extent, dtype=np.float64)
-            max_extent = float(np.max(extents))
-            volume = float(np.prod(extents))
-            cube_extent_limit = float(self.cube_side_length) * float(
-                self.sam_max_cluster_extent_multiplier)
-            cube_volume_limit = float(self.cube_side_length ** 3) * float(
-                self.sam_max_cluster_volume_multiplier)
-            if max_extent > cube_extent_limit:
-                print(f"Rejecting SAM mask by extent={max_extent:.4f}m")
-                continue
-            if volume > cube_volume_limit:
-                print(f"Rejecting SAM mask by volume={volume:.6f}m^3")
-                continue
-
-            viz_masks.append(clean_mask)
-            candidates.append(_SamMaskCandidate(
-                segmentation=clean_mask,
-                cluster=cluster,
-                centroid=self._cluster_centroid(np.asarray(cluster.points, dtype=np.float64)),
-            ))
+        viz_masks, candidates = self._process_selected_masks(
+            selected_masks,
+            rgb_image,
+            depth_m,
+            camera_info_msg,
+            depth_trunc=depth_trunc,
+            flip=flip,
+            plane_model=plane_model,
+            dino_box_batches=dino_box_batches,
+        )
+        dino_boxes = self._merge_box_batches(dino_box_batches)
 
         return _SamFrameData(
             original_cloud=original_cloud,

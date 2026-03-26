@@ -118,6 +118,7 @@ class PerceptionParams:
     sam_min_mask_plane_height: float
     sam_max_cluster_extent_multiplier: float
     sam_max_cluster_volume_multiplier: float
+    sam_rerun_on_extent_rejection: bool
     n_stack_cube_cloud: int
     sam_batch_consistency_ratio: float
 
@@ -219,6 +220,8 @@ def load_params(ns: str = "~") -> PerceptionParams:
             _p("sam_max_cluster_extent_multiplier", 2.8)),
         sam_max_cluster_volume_multiplier=float(
             _p("sam_max_cluster_volume_multiplier", 7.0)),
+        sam_rerun_on_extent_rejection=bool(
+            _p("sam_rerun_on_extent_rejection", False)),
         n_stack_cube_cloud=max(1, int(_p("n_stack_cube_cloud", 1))),
         sam_batch_consistency_ratio=min(
             1.0, max(0.0, float(_p("sam_batch_consistency_ratio", 0.5)))),
