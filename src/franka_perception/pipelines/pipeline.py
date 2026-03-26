@@ -29,7 +29,8 @@ class CubeDetectionPipeline:
                  clearance: float = 0.015,
                  max_cluster_distance_from_plane_inliers: float = 0.08,
                  below_plane_tolerance: float = 0.002,
-                 support_plane_constraint: str = "fix_icp") -> None:
+                 support_plane_constraint: str = "fix_icp",
+                 open3d_device: str = "auto") -> None:
         self.cube_side_length = cube_side_length
         self.voxel_size = voxel_size
         self.base_plane_distance = base_plane_distance
@@ -41,6 +42,7 @@ class CubeDetectionPipeline:
         self.max_cluster_distance_from_plane_inliers = max_cluster_distance_from_plane_inliers
         self.below_plane_tolerance = below_plane_tolerance
         self.support_plane_constraint = support_plane_constraint
+        self.open3d_device = open3d_device
 
     def process(self, points: np.ndarray, stop_after: str = "all") -> CubeDetectionResult:
         """Run the detection pipeline up to a chosen stage.
@@ -76,7 +78,11 @@ class CubeDetectionPipeline:
         # Apply basic filtering and table plane removal
         print("Filtering point cloud...")
         t0 = time.perf_counter()
-        filtered = filter_point_cloud(pcd, voxel_size=self.voxel_size)
+        filtered = filter_point_cloud(
+            pcd,
+            voxel_size=self.voxel_size,
+            open3d_device=self.open3d_device,
+        )
 
         plane_model, inliers = filtered.segment_plane(distance_threshold=self.base_plane_distance,
                                                       ransac_n=3,
@@ -146,6 +152,7 @@ class CubeDetectionPipeline:
                 plane_min_inliers=20,
                 support_plane_model=np.asarray(plane_model, dtype=float),
                 support_plane_constraint=self.support_plane_constraint,
+                open3d_device=self.open3d_device,
             )
             cubes.extend(estimates)
             plane_obbs.extend(obbs)

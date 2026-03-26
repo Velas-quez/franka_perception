@@ -8,6 +8,8 @@ import open3d as o3d
 from sensor_msgs import point_cloud2 as pc2
 from sensor_msgs.msg import CameraInfo, Image, PointCloud2
 
+from .open3d_backend import intrinsics_tensor, resolve_open3d_device, tensor_image
+
 
 def msg_to_xyz(msg: PointCloud2) -> np.ndarray:
     """Convert PointCloud2 to Nx3 numpy array, dropping NaNs/inf."""
@@ -199,30 +201,27 @@ def depth_to_xyz(
     return points
 
 
-def _o3d_images_from_msgs(
+def _rgbd_arrays_from_msgs(
     color_msg: Image,
     depth_msg: Image,
-) -> Tuple[o3d.geometry.Image, o3d.geometry.Image, float]:
-    """Convert ROS Image messages to Open3D images and infer depth scale."""
+) -> Tuple[np.ndarray, np.ndarray, float]:
+    """Convert ROS Image messages to RGB + native depth arrays."""
     bridge = _get_cv_bridge()
 
-    # Color: decode robustly to RGB8 for Open3D
     color = _color_msg_to_rgb8(color_msg)
 
-    # Depth: keep native encoding
     depth_encoding = depth_msg.encoding.lower()
     if depth_encoding in {"16uc1", "mono16"}:
-        depth = bridge.imgmsg_to_cv2(depth_msg, desired_encoding="16UC1")
-        depth_scale = 1000.0  # typical depth in millimeters
+        depth = bridge.imgmsg_to_cv2(depth_msg, desired_encoding="16UC1").astype(np.uint16)
+        depth_scale = 1000.0
     elif depth_encoding in {"32fc1"}:
         depth = bridge.imgmsg_to_cv2(depth_msg, desired_encoding="32FC1")
-        depth_scale = 1.0  # already meters
+        depth_scale = 1.0
     else:
-        # Let cv_bridge try a sane conversion; default to meter scale
         depth = bridge.imgmsg_to_cv2(depth_msg)
         depth_scale = 1.0
 
-    return o3d.geometry.Image(color), o3d.geometry.Image(depth), depth_scale
+    return np.ascontiguousarray(color), np.ascontiguousarray(depth), depth_scale
 
 
 def rgbd_msgs_to_xyz(
@@ -234,34 +233,35 @@ def rgbd_msgs_to_xyz(
     depth_trunc: float = 3.0,
     convert_rgb_to_intensity: bool = False,
     flip: bool = True,
+    open3d_device: str = "auto",
 ) -> np.ndarray:
     """Create a point cloud from ROS RGB-D messages using Open3D.
 
     Returns Nx3 numpy array in the camera frame (or flipped if requested).
     """
-    color_o3d, depth_o3d, inferred_scale = _o3d_images_from_msgs(
-        color_msg, depth_msg)
-    rgbd = o3d.geometry.RGBDImage.create_from_color_and_depth(
-        color_o3d,
-        depth_o3d,
-        depth_scale=inferred_scale if depth_scale is None else depth_scale,
-        depth_trunc=depth_trunc,
-        convert_rgb_to_intensity=convert_rgb_to_intensity,
+    del convert_rgb_to_intensity
+
+    color_np, depth_np, inferred_scale = _rgbd_arrays_from_msgs(color_msg, depth_msg)
+    fx, fy, cx, cy = _intrinsics_from_camera_info(camera_info)
+    device = resolve_open3d_device(open3d_device)
+    rgbd = o3d.t.geometry.RGBDImage(
+        tensor_image(color_np, device),
+        tensor_image(depth_np, device),
     )
-    intrinsics = camera_info_to_intrinsics(camera_info)
-    pcd = o3d.geometry.PointCloud.create_from_rgbd_image(rgbd, intrinsics)
+    pcd = o3d.t.geometry.PointCloud.create_from_rgbd_image(
+        rgbd,
+        intrinsics_tensor(fx, fy, cx, cy, device),
+        depth_scale=inferred_scale if depth_scale is None else depth_scale,
+        depth_max=depth_trunc,
+    )
 
-    if flip:
-        pcd.transform([
-            [1.0, 0.0, 0.0, 0.0],
-            [0.0, -1.0, 0.0, 0.0],
-            [0.0, 0.0, -1.0, 0.0],
-            [0.0, 0.0, 0.0, 1.0],
-        ])
-
-    points = np.asarray(pcd.points, dtype=np.float64)
+    points = np.asarray(pcd.point.positions.cpu().numpy(), dtype=np.float64)
     if not points.size:
         return np.empty((0, 3), dtype=np.float64)
+    if flip:
+        points = points.copy()
+        points[:, 1] *= -1.0
+        points[:, 2] *= -1.0
     if not np.isfinite(points).all():
         points = points[np.all(np.isfinite(points), axis=1)]
     return points

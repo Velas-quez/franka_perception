@@ -89,6 +89,7 @@ class SingleCloudNode:
                 support_plane_constraint=self.params.support_plane_constraint,
                 n_stack_cube_cloud=self.params.n_stack_cube_cloud,
                 sam_batch_consistency_ratio=self.params.sam_batch_consistency_ratio,
+                open3d_device=self.params.open3d_device,
             )
         else:
             self.pipeline = CubeDetectionPipeline(
@@ -103,6 +104,7 @@ class SingleCloudNode:
                 max_cluster_distance_from_plane_inliers=self.params.max_cluster_distance_from_plane_inliers,
                 below_plane_tolerance=self.params.below_plane_tolerance,
                 support_plane_constraint=self.params.support_plane_constraint,
+                open3d_device=self.params.open3d_device,
             )
         self._cloud_topic_points: Optional[np.ndarray] = None
         self._rgbd_points: Optional[np.ndarray] = None
@@ -194,6 +196,7 @@ class SingleCloudNode:
             depth_scale=depth_scale,
             depth_trunc=self.params.depth_trunc,
             flip=self.params.rgbd_flip,
+            open3d_device=self.params.open3d_device,
         )
         if not has_points(points):
             rospy.logwarn("Received empty/invalid RGB-D; ignoring")

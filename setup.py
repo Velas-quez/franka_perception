@@ -5,7 +5,9 @@ setup(
     version="0.0.0",
     packages=find_packages("src"),
     package_dir={"": "src"},
-    install_requires=[],
+    install_requires=[
+        "open3d==0.19.0",
+    ],
     extras_require={
         "sam": [
             "torch",

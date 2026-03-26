@@ -10,6 +10,7 @@ import open3d as o3d
 from franka_perception.pipelines.result_type import CubeDetectionResult
 
 from ..core.cloud_io import depth_to_xyz, rgbd_msgs_to_numpy
+from ..core.open3d_backend import voxel_downsample_legacy_point_cloud
 from ..geometry.cube_fitting import CubeEstimate, fit_cubes_in_cluster, select_best_cubes
 from ..geometry.sam_masking import SamSegmenter, erode_mask, select_mask_candidates
 from ..render.sam_visualization import build_mask_overlay
@@ -71,7 +72,8 @@ class SamRgbdCubeDetectionPipeline:
                  sam_max_cluster_volume_multiplier: float = 7.0,
                  support_plane_constraint: str = "fix_icp",
                  n_stack_cube_cloud: int = 1,
-                 sam_batch_consistency_ratio: float = 1.0) -> None:
+                 sam_batch_consistency_ratio: float = 1.0,
+                 open3d_device: str = "auto") -> None:
         self.cube_side_length = cube_side_length
         self.voxel_size = voxel_size
         self.max_cubes_per_cluster = max_cubes_per_cluster
@@ -94,6 +96,7 @@ class SamRgbdCubeDetectionPipeline:
         self.n_stack_cube_cloud = max(1, int(n_stack_cube_cloud))
         self.sam_batch_consistency_ratio = min(
             1.0, max(0.0, float(sam_batch_consistency_ratio)))
+        self.open3d_device = open3d_device
         self.sam_batch_mask_iou_threshold = 0.35
         self.sam_batch_mask_dilation_kernel = 3
         self.sam_batch_mask_dilation_iterations = 1
@@ -290,7 +293,11 @@ class SamRgbdCubeDetectionPipeline:
 
             cluster = self._to_pcd(points)
             if self.voxel_size > 0.0 and len(cluster.points) > 0:
-                cluster = cluster.voxel_down_sample(self.voxel_size)
+                cluster = voxel_downsample_legacy_point_cloud(
+                    cluster,
+                    self.voxel_size,
+                    device=self.open3d_device,
+                )
             if len(cluster.points) < self.sam_min_points_per_cluster:
                 continue
 
@@ -389,7 +396,11 @@ class SamRgbdCubeDetectionPipeline:
             merged_points = np.vstack(track["point_sets"])
             merged_cluster = self._to_pcd(merged_points)
             if self.voxel_size > 0.0 and len(merged_cluster.points) > 0:
-                merged_cluster = merged_cluster.voxel_down_sample(self.voxel_size)
+                merged_cluster = voxel_downsample_legacy_point_cloud(
+                    merged_cluster,
+                    self.voxel_size,
+                    device=self.open3d_device,
+                )
             try:
                 merged_cluster, _ = merged_cluster.remove_statistical_outlier(
                     nb_neighbors=20, std_ratio=2.0)
@@ -476,6 +487,7 @@ class SamRgbdCubeDetectionPipeline:
                 plane_min_inliers=20,
                 support_plane_model=frame_data.plane_model,
                 support_plane_constraint=self.support_plane_constraint,
+                open3d_device=self.open3d_device,
             )
             cubes.extend(estimates)
             plane_obbs.extend(obbs)

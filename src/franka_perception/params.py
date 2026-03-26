@@ -70,6 +70,7 @@ class PerceptionParams:
     depth_scale: float
     depth_trunc: float
     rgbd_flip: bool
+    open3d_device: str
 
     # Classic geometry pipeline.
     cube_side_length: float
@@ -166,6 +167,7 @@ def load_params(ns: str = "~") -> PerceptionParams:
         depth_scale=float(_p("depth_scale", 0.0)),
         depth_trunc=float(_p("depth_trunc", 3.0)),
         rgbd_flip=bool(_p("rgbd_flip", False)),
+        open3d_device=_p("open3d_device", "auto"),
 
         # Classic geometry pipeline.
         cube_side_length=float(_p("cube_side_length", 0.045)),

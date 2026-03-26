@@ -162,6 +162,7 @@ class DynamicListenerNode:
                 support_plane_constraint=self.params.support_plane_constraint,
                 n_stack_cube_cloud=self.params.n_stack_cube_cloud,
                 sam_batch_consistency_ratio=self.params.sam_batch_consistency_ratio,
+                open3d_device=self.params.open3d_device,
             )
         else:
             self.pipeline = CubeDetectionPipeline(
@@ -176,6 +177,7 @@ class DynamicListenerNode:
                 max_cluster_distance_from_plane_inliers=self.params.max_cluster_distance_from_plane_inliers,
                 below_plane_tolerance=self.params.below_plane_tolerance,
                 support_plane_constraint=self.params.support_plane_constraint,
+                open3d_device=self.params.open3d_device,
             )
 
     def _restart_pipeline(self) -> None:
@@ -209,6 +211,7 @@ class DynamicListenerNode:
             depth_scale=depth_scale,
             depth_trunc=self.params.depth_trunc,
             flip=self.params.rgbd_flip,
+            open3d_device=self.params.open3d_device,
         )
         if has_points(reconstructed_points):
             self._publish_reconstructed_cloud(reconstructed_points, depth_msg.header)

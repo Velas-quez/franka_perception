@@ -7,6 +7,7 @@ from typing import List, Optional, Tuple
 import numpy as np
 import open3d as o3d
 
+from ..core.open3d_backend import run_tensor_icp
 from .cube_pose import estimate_cube_pose
 from .plane_segmentation import PlaneDetection, segment_planes
 
@@ -429,7 +430,8 @@ def fit_cubes_in_cluster(cluster_pcd: o3d.geometry.PointCloud,
                          plane_distance: float = 0.0005,
                          plane_min_inliers: int = 20,
                          support_plane_model: Optional[np.ndarray] = None,
-                         support_plane_constraint: str = "fix_icp") -> Tuple[List[CubeEstimate], List[o3d.geometry.OrientedBoundingBox], List[o3d.geometry.TriangleMesh]]:
+                         support_plane_constraint: str = "fix_icp",
+                         open3d_device: str = "auto") -> Tuple[List[CubeEstimate], List[o3d.geometry.OrientedBoundingBox], List[o3d.geometry.TriangleMesh]]:
     """Fit up to max_cubes into the cluster using plane detection + ICP.
 
     Returns:
@@ -503,24 +505,51 @@ def fit_cubes_in_cluster(cluster_pcd: o3d.geometry.PointCloud,
             )
 
         if constrained_result is not None:
-            T_final, icp_fitness, _ = constrained_result
+            T_seed, _, _ = constrained_result
+            try:
+                T_final, icp_fitness, _ = run_tensor_icp(
+                    source_pcd,
+                    target_pcd,
+                    T_seed,
+                    device=open3d_device,
+                    coarse_threshold=0.008,
+                    fine_threshold=0.003,
+                )
+                T_final = _adjust_transform_to_support_plane(
+                    T_final,
+                    cube_side_length,
+                    support_plane_model,
+                )
+                icp_fitness, _ = _evaluate_transform(source_points, target_pcd, T_final)
+            except RuntimeError:
+                T_final, icp_fitness, _ = constrained_result
         else:
-            icp_coarse = o3d.pipelines.registration.registration_icp(
-                source_pcd,
-                target_pcd,
-                0.008,
-                init_T,
-                o3d.pipelines.registration.TransformationEstimationPointToPoint()
-            )
-            icp_result = o3d.pipelines.registration.registration_icp(
-                source_pcd,
-                target_pcd,
-                0.003,
-                icp_coarse.transformation,
-                o3d.pipelines.registration.TransformationEstimationPointToPoint()
-            )
-            T_final = icp_result.transformation.copy()
-            icp_fitness = float(icp_result.fitness)
+            try:
+                T_final, icp_fitness, _ = run_tensor_icp(
+                    source_pcd,
+                    target_pcd,
+                    init_T,
+                    device=open3d_device,
+                    coarse_threshold=0.008,
+                    fine_threshold=0.003,
+                )
+            except RuntimeError:
+                icp_coarse = o3d.pipelines.registration.registration_icp(
+                    source_pcd,
+                    target_pcd,
+                    0.008,
+                    init_T,
+                    o3d.pipelines.registration.TransformationEstimationPointToPoint()
+                )
+                icp_result = o3d.pipelines.registration.registration_icp(
+                    source_pcd,
+                    target_pcd,
+                    0.003,
+                    icp_coarse.transformation,
+                    o3d.pipelines.registration.TransformationEstimationPointToPoint()
+                )
+                T_final = icp_result.transformation.copy()
+                icp_fitness = float(icp_result.fitness)
 
         if support_plane_mode == "adjust":
             T_final = _adjust_transform_to_support_plane(
