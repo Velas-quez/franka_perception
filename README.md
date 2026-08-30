@@ -1,4 +1,7 @@
 # Overview
+
+![Franka robot stacking wooden blocks](images/robot.jpeg)
+
 This repository contains the code for the complete perception pipeline used in the Intelligentic Robotic Manipulation Project course.
 The main goal is to stack the maximum ammount of wooden blocks using the Franka Research robotic arm and ZED cameras in realtime.
 This code uses DINO+SAM to identify and segment the blocks, and process the rgbd information from the camera using Open3D, in order to obtain a precise 3D position and orientation of all the blocks in the camera field of view.
